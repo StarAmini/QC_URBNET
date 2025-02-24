@@ -1,0 +1,721 @@
+##QC_URBNET_src_Function
+
+tm_range_outliers <- function(xts_vector,
+                              missed = c(-999, -888, -99.9, -88.8)) {
+  
+  rm_dates <- time(xts_vector[xts_vector %in% missed])
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+}
+################################################
+tm_gross_error <- function(xts_vector) {
+  
+  # Identify dates with outliers (values > 60 or < -30)
+  outlier_dates <- time(xts_vector[xts_vector > 60 | xts_vector < -40])
+  
+  # Create a copy of the input data for cleaning and flagging
+  qc_data <- qc_data_flagged <- xts_vector
+  
+  # Set outlier values to NA in qc_data
+  qc_data[outlier_dates] <- NA
+  
+  # Flag outliers in qc_data_flagged
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0  # Default flag to 0
+  qc_data_flagged[outlier_dates] <- 1  # Flag outliers as 1
+  
+  # Create the output list
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+}
+
+#######################################################################
+
+tm_range_outliers_thre <- function(xts_vector,
+                                   min_val = -27.18,
+                                   max_val = 47.05) {
+  
+  rm_dates <- which(xts_vector < min_val | xts_vector > max_val)
+  rm_dates <- time(xts_vector[rm_dates])
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+  
+}
+
+
+tm_temporal_outliers <- function(xts_vector,
+                                 min_diff = -5,
+                                 max_diff = 6){
+  
+  diffs1 <- c(xts_vector - stats::lag(xts_vector, k = -1))
+  diffs2 <- c(stats::lag(xts_vector, k = 1) - xts_vector)
+  
+  rm_dates1 <- which(diffs1 < min_diff | diffs1 > max_diff)
+  rm_dates2 <- which(diffs2 < min_diff | diffs2 > max_diff)
+  
+  rm_dates <- intersect(rm_dates1, rm_dates2)
+  rm_dates <- time(xts_vector[rm_dates])
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+  
+}
+
+tm_persistence_outliers <- function(xts_vector,
+                                    min_change = 0.04,
+                                    params_time_scale = list(by_ = "-10 min",
+                                                             length.out_ = 18)) {
+  
+  # Calculate differences between consecutive elements in the column
+  diffs <- abs(diff(xts_vector))
+  
+  # 3 hours
+  xts_vector_3h <- period.apply(diffs, endpoints(diffs, "hours", k = 3), FUN = function(x)sum(x))
+  
+  flagged_xts_vector_3h <- xts_vector_3h[xts_vector_3h < min_change]
+  
+  flagged_dates_xts_vector <- lapply(time(flagged_xts_vector_3h), function(x){
+    
+    seq(x, by = params_time_scale$by_, length.out = params_time_scale$length.out_)
+    
+  })
+  
+  flagged_dates_xts_vector <- do.call(c, flagged_dates_xts_vector)
+  rm_dates <- flagged_dates_xts_vector
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+  
+}
+
+tm_persistence_outliers2 <- function(xts_vector,
+                                     min_change = 0.04,
+                                     N_window = 0,
+                                     params_time_scale = list(by_ = "-10 min",
+                                                              length.out_ = 18)) {
+  
+  # Calculate differences between consecutive elements in the column
+  diffs <- abs(diff(xts_vector))
+  
+  # 3 hours
+  xts_vector_3h <- period.apply(diffs, endpoints(diffs, "hours", k = 3), FUN = function(x){
+    
+    ifelse(sum(is.na(x)) > N_window*params_time_scale$length.out_, NA, sum(x))
+    # if the numbers or NAs is more than N_window*params_time_scale$length.out_, the results will be NA
+    # otherwise, it will sum
+    # N_window = mean the percentage of aceptance of NAs 
+    # N_window = 0 -> same as the original function (does not matter the number of NAs)
+    # N_window = 0.5 -> at least 50% of NAs 
+    # N_window = 1 -> no NAs are admited 
+    
+  })
+  
+  flagged_xts_vector_3h <- xts_vector_3h[xts_vector_3h < min_change]
+  
+  flagged_dates_xts_vector <- lapply(time(flagged_xts_vector_3h), function(x){
+    
+    seq(x, by = params_time_scale$by_, length.out = params_time_scale$length.out_)
+    
+  })
+  
+  flagged_dates_xts_vector <- do.call(c, flagged_dates_xts_vector)
+  rm_dates <- flagged_dates_xts_vector
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+  
+}
+
+tm_persistence_outliers3 <- function(xts_vector,
+                                     min_change = 0.04,
+                                     N_window = 0,
+                                     params_time_scale = list(by_ = "-10 min",
+                                                              K_ = 3, # hours 
+                                                              length.out_ = 18)) {
+  
+  # Calculate differences between consecutive elements in the column
+  diffs <- abs(diff(xts_vector))
+  
+  # 3 hours
+  xts_vector_3h <- period.apply(diffs, endpoints(diffs, "hours", k = K_), FUN = function(x){
+    
+    ifelse(sum(is.na(x)) > N_window*params_time_scale$length.out_, NA, sum(x))
+    # if the numbers or NAs is more than N_window*params_time_scale$length.out_, the results will be NA
+    # otherwise, it will sum
+    # N_window = mean the percentage of aceptance of NAs 
+    # N_window = 0 -> same as the original function (does not matter the number of NAs)
+    # N_window = 0.5 -> at least 50% of NAs 
+    # N_window = 1 -> no NAs are admited 
+    
+  })
+  
+  flagged_xts_vector_3h <- xts_vector_3h[xts_vector_3h < min_change]
+  
+  flagged_dates_xts_vector <- lapply(time(flagged_xts_vector_3h), function(x){
+    
+    seq(x, by = params_time_scale$by_, length.out = params_time_scale$length.out_)
+    
+  })
+  
+  flagged_dates_xts_vector <- do.call(c, flagged_dates_xts_vector)
+  rm_dates <- flagged_dates_xts_vector
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+  
+}
+
+tm_persistence_outliers4 <- function(xts_vector, min_change = 0.04, n_window = 0.5, by = "10 min", length_out = 18) {
+  # Calculate absolute differences
+  diffs <- abs(diff(xts_vector))
+  
+  # Custom sum function to handle NA tolerance
+  custom_sum <- function(xts_vector_chunk, n_window = 0.5) {
+    n_nas <- sum(is.na(xts_vector_chunk))  # Count the number of NAs
+    if (n_nas > n_window * length(xts_vector_chunk)) {
+      return(NA)  # Too many NAs, return NA
+    } else {
+      return(sum(xts_vector_chunk, na.rm = TRUE))  # Sum non-NA values
+    }
+  }
+  
+  # Apply rolling window sum
+  rolling_sum <- zoo::rollapply(diffs, width = 18, FUN = function(chunk) custom_sum(chunk, n_window = n_window), fill = NA, align = "right")
+  
+  # Flag bins where total change < min_change
+  flagged_periods <- rolling_sum < min_change
+  flagged_timestamps <- which(flagged_periods)
+  
+  # Generate flagged date ranges
+  flagged_dates <- lapply(flagged_timestamps, function(ts) {
+    seq(from = index(xts_vector)[ts], by = by, length.out = length_out)
+  })
+  
+  # Concatenate flagged dates into a single vector
+  if (length(flagged_dates) == 0) {
+    rm_dates <- NULL
+  } else {
+    rm_dates <- unique(do.call("c", flagged_dates))
+  }
+  
+  # Ensure flagged dates are within the series index
+  rm_dates <- rm_dates[rm_dates %in% index(xts_vector)]
+  
+  # Build the output
+  qc_data <- xts_vector
+  qc_data[rm_dates] <- NA
+  
+  # Create binary flag series
+  qc_data_flagged <- xts(rep(0, length(index(xts_vector))), order.by = index(xts_vector))
+  qc_data_flagged[rm_dates] <- 1
+  
+  return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
+}
+
+
+tm_persistence_outliers5 <- function(xts_vector, n_window = 0.5, by = "10 min", length_out = 18) {
+  # Custom function to calculate standard deviation with NA tolerance
+  custom_sd <- function(chunk, n_window = 0.5) {
+    n_nas <- sum(is.na(chunk))  # Count number of NAs
+    if (n_nas > n_window * length(chunk)) {
+      return(NA)  # Too many NAs, return NA
+    } else {
+      return(sd(chunk, na.rm = TRUE))  # Calculate standard deviation, ignoring NAs
+    }
+  }
+  
+  # Apply rolling window of 3 hours (18 intervals for 10-minute data)
+  rolling_sd <- zoo::rollapply(
+    xts_vector,
+    width = 18,  # 18 intervals for 10-minute frequency (equivalent to 3 hours)
+    FUN = function(chunk) custom_sd(chunk, n_window = n_window),
+    fill = NA,
+    align = "right"
+  )
+  
+  # Flag windows with standard deviation == 0
+  flagged_periods <- rolling_sd == 0
+  flagged_timestamps <- which(flagged_periods)
+  
+  # Generate flagged date ranges (covering the window of length `length_out`)
+  flagged_dates <- lapply(flagged_timestamps, function(ts) {
+    seq(from = index(xts_vector)[ts], by = by, length.out = length_out)
+  })
+  
+  # Concatenate flagged dates into a single vector
+  if (length(flagged_dates) == 0) {
+    rm_dates <- NULL
+  } else {
+    rm_dates <- unique(do.call("c", flagged_dates))
+  }
+  
+  # Ensure flagged dates are within the index of the original series
+  rm_dates <- rm_dates[rm_dates %in% index(xts_vector)]
+  
+  # Create cleaned data by setting flagged dates to NA
+  qc_data <- xts_vector
+  qc_data[rm_dates] <- NA
+  
+  # Create a binary flag series (1 for flagged, 0 for not flagged)
+  qc_data_flagged <- xts(rep(0, length(index(xts_vector))), order.by = index(xts_vector))
+  qc_data_flagged[rm_dates] <- 1
+  
+  return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
+}
+
+
+
+
+############################################################################################333
+
+
+
+tm_mov_average_outliers <- function(xts_vector,
+                                    width = 144*3, # for 10 min steps in three days
+                                    thres = 50,
+                                    show_hist = FALSE)
+{
+  
+  # Calculate the running median with a 1-hour window (6 data points for 10-minute steps)
+  running_median <- zoo::rollapply(xts_vector, width = width, FUN = function(x) median(x, na.rm = TRUE), by.column = TRUE, align = "center")
+  
+  # Calculate the difference between each data point and the running median
+  difference <- xts_vector - running_median
+  
+  if(show_hist == TRUE){
+    print(hist(difference))
+  }
+  
+  # Create a flag vector, where 1 indicates a significant difference from the median
+  rm_dates <- which(difference < -thres | difference > thres)
+  rm_dates <- time(xts_vector[rm_dates])
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+}
+
+
+tm_extreme_quantiles_outliers <- function(xts_vector,
+                                          ext_lim_factor = 4){
+  
+  tavg_filter_l <- sapply(1:12, function(x) {
+    xts_obj_sample <- xts_vector[, 1][as.numeric(format(time(xts_vector), "%m")) == x]
+    quantile(xts_obj_sample, .25, na.rm = TRUE) - ext_lim_factor * IQR(xts_obj_sample, na.rm = TRUE)
+  })
+  
+  tavg_filter_h <- sapply(1:12, function(x) {
+    xts_obj_sample <- xts_vector[, 1][as.numeric(format(time(xts_vector), "%m")) == x]
+    quantile(xts_obj_sample, .75, na.rm = TRUE) + ext_lim_factor * IQR(xts_obj_sample, na.rm = TRUE)
+  })
+  
+  rm_dates <- do.call(c, sapply(1:12, function(x) {
+    xts_obj_sample <- xts_vector[, 1][as.numeric(format(time(xts_vector), "%m")) == x]
+    zoo::index(
+      xts_obj_sample[xts_obj_sample <= tavg_filter_l[x] |
+                       xts_obj_sample >= tavg_filter_h[x]]
+    )
+  }))
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+  
+}
+
+
+tm_spatial_outliers <- function(xts_vector,
+                                xts_database,
+                                xyz_metadata,
+                                lmt_xy = 15000,
+                                lmt_n_min = 1,
+                                lmt_n_max = 5,
+                                z_score = 3) {
+  
+  xy_target <- colnames(xts_vector)
+  xy_nearby_s <- get_spatial_nearby_points(xy_target = xy_target,
+                                           xyz_metadata = xyz_metadata,
+                                           lmt_xy = lmt_xy,
+                                           lmt_n = lmt_n_max)
+  xy_nearby <- xy_nearby_s[-1] # the first one is the target
+  
+  if(length(xy_nearby) < lmt_n_min) {# if there is no nearby stations, no flags
+    
+    rm_dates <- NA
+    
+  } else {
+    
+    xts_target <- xts_database[, xy_target]
+    xts_nearby <- xts_database[, xy_nearby]
+    
+    mean_neighbors_ts <- apply(xts_nearby, 1, mean, na.rm = FALSE)
+    std_neighbors_ts <- apply(xts_nearby, 1, sd, na.rm = FALSE)
+    
+    rm_dates <- ((xts_target - mean_neighbors_ts)) /(std_neighbors_ts)
+    rm_dates <- which(rm_dates < -z_score | rm_dates > z_score)
+    
+  }
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  # qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged,
+    qc_spatial = xy_nearby_s # new output (n° of nearby stations)
+  )
+  
+  return(out)
+  
+}
+
+tm_spatial_outliers2 <- function(xts_vector,
+                                 xts_database,
+                                 xyz_metadata,
+                                 lmt_xy = 15000,
+                                 lmt_n_min = 1,
+                                 lmt_n_max = 5,
+                                 z_score = 3) {
+  
+  xy_target <- colnames(xts_vector)
+  
+  # first: spatial check based on lmt_xy and lmt_n_max
+  xy_nearby_s <- get_spatial_nearby_points(xy_target = xy_target,
+                                           xyz_metadata = xyz_metadata,
+                                           lmt_xy = lmt_xy,
+                                           lmt_n = lmt_n_max)
+  
+  # second: removing station(s) that does have the same land use
+  xy_nearby_s_lu <- xyz_metadata[match(xy_nearby_s, xyz_metadata$ID), ]
+  xy_nearby_s_lu$Landuse_target <- xy_nearby_s_lu$Landuse[1] # target 
+  xy_nearby_s_lu <- transform(xy_nearby_s_lu,
+                              same_landuse = Landuse_target == Landuse)
+  xy_nearby_s_lu <- xy_nearby_s_lu[xy_nearby_s_lu$same_landuse ==  TRUE, ]
+  xy_nearby_s_lu <- xy_nearby_s_lu$ID
+  
+  xy_nearby <- xy_nearby_s_lu[-1] # the first one is the target
+  
+  if(length(xy_nearby) < lmt_n_min) {# if there is no nearby stations that no share the same land use, no flags
+    
+    rm_dates <- NA
+    
+  } else {
+    
+    xts_target <- xts_database[, xy_target]
+    xts_nearby <- xts_database[, xy_nearby]
+    
+    mean_neighbors_ts <- apply(xts_nearby, 1, mean, na.rm = FALSE)
+    std_neighbors_ts <- apply(xts_nearby, 1, sd, na.rm = FALSE)
+    
+    rm_dates <- ((xts_target - mean_neighbors_ts)) /(std_neighbors_ts)
+    rm_dates <- which(rm_dates < -z_score | rm_dates > z_score)
+    
+  }
+  
+  qc_data <- qc_data_flagged <- xts_vector
+  # qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged,
+    qc_spatial = xy_nearby_s_lu # new output (n° of nearby stations)
+  )
+  
+  return(out)
+  
+}
+
+get_spatial_nearby_points <- function(xy_target,
+                                      xyz_metadata,
+                                      lmt_xy,
+                                      lmt_n)
+{
+  
+  pos_target <- match(xy_target, xyz_metadata$ID)
+  
+  target <- xyz_metadata[pos_target, c("LON", "LAT")]
+  nearby <- xyz_metadata[, c("LON", "LAT")]
+  
+  out <- xyz_metadata[, c("ID", "LON", "LAT")]
+  out$distance <- geosphere::distHaversine(target, nearby)
+  out <- out[out$distance < lmt_xy, ]
+  out <- out[order(out$distance), ]
+  out <- out[1:(lmt_n + 1), ]
+  out <- out[complete.cases(out), ]
+  out <- as.character(out$ID)
+  
+  return(out)
+  
+}
+
+spatemp_value_check_NOLU <- function(xy_target,
+                                     xy_database,
+                                     xts_database,
+                                     params = list(
+                                       lmt_xy_ = 2500,
+                                       lmt_n_ = 5,
+                                       n_nearby_ = 5)
+) {
+  
+  # spatial check
+  
+  xy_nearby <- get_spatial_nearby_points(xy_target = xy_target,
+                                         xyz_metadata = xy_database,
+                                         lmt_xy = params$lmt_xy_,
+                                         lmt_n = params$lmt_n_)
+  xy_nearby <- xy_nearby[-1]
+  
+  target_xts <- xts_database[, xy_target]
+  nearby_xts <- xts_database[, xy_nearby]
+  
+  dif_target_nearby <- lapply(
+    seq_len(ncol(nearby_xts)),
+    function(idd) {
+      
+      dif_ts <- target_xts - nearby_xts[, idd]
+      
+      dif_099 <- quantile(dif_ts, 0.9999, na.rm = TRUE)
+      flag_099_pos <- time(dif_ts[dif_ts >= dif_099])
+      
+      dif_1_099 <- quantile(dif_ts, 1 - 0.9999, na.rm = TRUE)
+      flag_099_neg <- time(dif_ts[dif_ts <= dif_1_099])
+      
+      out_ts <- dif_ts
+      out_ts[!is.na(out_ts)] <- 0
+      out_ts[c(flag_099_pos, flag_099_neg)] <- 1
+      
+      out_ts
+    }
+  )
+  
+  dif_target_nearby <- do.call(cbind, dif_target_nearby)
+  dif_target_nearby <- rowSums(dif_target_nearby, na.rm = TRUE)
+  # time step in which at least 5 nearby points are flagged
+  dif_target_nearby <- which(dif_target_nearby >= params$n_nearby_)
+  # getting the dates
+  dif_target_nearby <- time(target_xts)[dif_target_nearby]
+  dif_target_nearby <- as.character(dif_target_nearby)
+  
+  # temporal check
+  # previous date
+  dif_target_target_pre <-  target_xts - stats::lag(target_xts, k = -1)
+  quant_099_pre <- quantile(
+    dif_target_target_pre,
+    0.9999,
+    na.rm = TRUE
+  )
+  dif_target_target_pre <- dif_target_target_pre[
+    dif_target_target_pre > quant_099_pre |
+      dif_target_target_pre < -quant_099_pre
+  ]
+  dif_target_target_pre <- as.character(time(dif_target_target_pre))
+  
+  # next date
+  dif_target_target_nex <-  stats::lag(target_xts, k = 1) - target_xts
+  quant_099_next <- quantile(
+    dif_target_target_nex[dif_target_target_nex > 0],
+    0.9999,
+    na.rm = TRUE
+  )
+  dif_target_target_nex <- dif_target_target_nex[
+    dif_target_target_nex > quant_099_next |
+      dif_target_target_nex < -quant_099_next
+  ]
+  dif_target_target_nex <- as.character(time(dif_target_target_nex))
+  dif_target_target <- intersect(dif_target_target_pre, dif_target_target_nex)
+  
+  # intersecting both checks
+  rm_dates <- intersect(dif_target_target, dif_target_nearby)
+  
+  qc_data <- qc_data_flagged <- target_xts
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+}
+
+spatemp_value_check_LU <- function(xy_target,
+                                   xy_database,
+                                   xts_database,
+                                   params = list(
+                                     lmt_xy_ = 2500,
+                                     lmt_n_ = 5,
+                                     n_nearby_ = 5)
+) {
+  
+  # first: spatial check based on lmt_xy and lmt_n_max
+  
+  xy_nearby_s <- get_spatial_nearby_points(xy_target = xy_target,
+                                           xyz_metadata = xy_database,
+                                           lmt_xy = params$lmt_xy_,
+                                           lmt_n = params$lmt_n_)
+  
+  # second: removing station(s) that does have the same land use
+  xy_nearby_s_lu <- xy_database[match(xy_nearby_s, xy_database$ID), ]
+  xy_nearby_s_lu$Landuse_target <- xy_nearby_s_lu$Landuse[1] # target 
+  xy_nearby_s_lu <- transform(xy_nearby_s_lu,
+                              same_landuse = Landuse_target == Landuse)
+  xy_nearby_s_lu <- xy_nearby_s_lu[xy_nearby_s_lu$same_landuse ==  TRUE, ]
+  xy_nearby_s_lu <- xy_nearby_s_lu$ID
+  
+  xy_nearby <- xy_nearby_s_lu[-1] # the first one is the target
+  
+  target_xts <- xts_database[, xy_target]
+  nearby_xts <- xts_database[, xy_nearby]
+  
+  dif_target_nearby <- lapply(
+    seq_len(ncol(nearby_xts)),
+    function(idd) {
+      
+      dif_ts <- target_xts - nearby_xts[, idd]
+      
+      dif_099 <- quantile(dif_ts, 0.9999, na.rm = TRUE)
+      flag_099_pos <- time(dif_ts[dif_ts >= dif_099])
+      
+      dif_1_099 <- quantile(dif_ts, 1 - 0.9999, na.rm = TRUE)
+      flag_099_neg <- time(dif_ts[dif_ts <= dif_1_099])
+      
+      out_ts <- dif_ts
+      out_ts[!is.na(out_ts)] <- 0
+      out_ts[c(flag_099_pos, flag_099_neg)] <- 1
+      
+      out_ts
+    }
+  )
+  
+  dif_target_nearby <- do.call(cbind, dif_target_nearby)
+  dif_target_nearby <- rowSums(dif_target_nearby, na.rm = TRUE)
+  # time step in which at least 5 nearby points are flagged
+  dif_target_nearby <- which(dif_target_nearby >= params$n_nearby_)
+  # getting the dates
+  dif_target_nearby <- time(target_xts)[dif_target_nearby]
+  dif_target_nearby <- as.character(dif_target_nearby)
+  
+  # temporal check
+  # previous date
+  dif_target_target_pre <-  target_xts - stats::lag(target_xts, k = -1)
+  quant_099_pre <- quantile(
+    dif_target_target_pre,
+    0.9999,
+    na.rm = TRUE
+  )
+  dif_target_target_pre <- dif_target_target_pre[
+    dif_target_target_pre > quant_099_pre |
+      dif_target_target_pre < -quant_099_pre
+  ]
+  dif_target_target_pre <- as.character(time(dif_target_target_pre))
+  
+  # next date
+  dif_target_target_nex <-  stats::lag(target_xts, k = 1) - target_xts
+  quant_099_next <- quantile(
+    dif_target_target_nex[dif_target_target_nex > 0],
+    0.9999,
+    na.rm = TRUE
+  )
+  dif_target_target_nex <- dif_target_target_nex[
+    dif_target_target_nex > quant_099_next |
+      dif_target_target_nex < -quant_099_next
+  ]
+  dif_target_target_nex <- as.character(time(dif_target_target_nex))
+  dif_target_target <- intersect(dif_target_target_pre, dif_target_target_nex)
+  
+  # intersecting both checks
+  rm_dates <- intersect(dif_target_target, dif_target_nearby)
+  
+  qc_data <- qc_data_flagged <- target_xts
+  qc_data[rm_dates] <- NA
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data_flagged[rm_dates] <- 1
+  
+  out <- list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+  
+  return(out)
+}
