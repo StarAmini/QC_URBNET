@@ -305,15 +305,15 @@ spatemp_value_check_NOLU2 <- function(xy_target,
       
       dif_ts <- target_xts - nearby_xts[, idd]
       
-      dif_099 <- quantile(dif_ts, 0.9999, na.rm = TRUE)
-      flag_099_pos <- time(dif_ts[dif_ts >= dif_099])
+      dif_098 <- quantile(dif_ts, 0.9888, na.rm = TRUE)
+      flag_098_pos <- time(dif_ts[dif_ts >= dif_098])
       
-      dif_1_099 <- quantile(dif_ts, 1 - 0.9999, na.rm = TRUE)
-      flag_099_neg <- time(dif_ts[dif_ts <= dif_1_099])
+      dif_1_098 <- quantile(dif_ts, 1 - 0.9888, na.rm = TRUE)
+      flag_098_neg <- time(dif_ts[dif_ts <= dif_1_098])
       
       out_ts <- dif_ts
       out_ts[!is.na(out_ts)] <- 0
-      out_ts[c(flag_099_pos, flag_099_neg)] <- 1
+      out_ts[c(flag_098_pos, flag_098_neg)] <- 1
       
       out_ts
     }
@@ -330,27 +330,27 @@ spatemp_value_check_NOLU2 <- function(xy_target,
   # temporal check
   # previous date
   dif_target_target_pre <-  target_xts - stats::lag(target_xts, k = -1)
-  quant_099_pre <- quantile(
+  quant_098_pre <- quantile(
     dif_target_target_pre,
-    0.9999,
+    0.9888,
     na.rm = TRUE
   )
   dif_target_target_pre <- dif_target_target_pre[
-    dif_target_target_pre > quant_099_pre |
-      dif_target_target_pre < -quant_099_pre
+    dif_target_target_pre > quant_098_pre |
+      dif_target_target_pre < -quant_098_pre
   ]
   dif_target_target_pre <- as.character(time(dif_target_target_pre))
   
   # next date
   dif_target_target_nex <-  stats::lag(target_xts, k = 1) - target_xts
-  quant_099_next <- quantile(
+  quant_098_next <- quantile(
     dif_target_target_nex[dif_target_target_nex > 0],
-    0.9999,
+    0.9888,
     na.rm = TRUE
   )
   dif_target_target_nex <- dif_target_target_nex[
-    dif_target_target_nex > quant_099_next |
-      dif_target_target_nex < -quant_099_next
+    dif_target_target_nex > quant_098_next |
+      dif_target_target_nex < -quant_098_next
   ]
   dif_target_target_nex <- as.character(time(dif_target_target_nex))
   dif_target_target <- intersect(dif_target_target_pre, dif_target_target_nex)
