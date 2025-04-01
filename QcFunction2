@@ -376,3 +376,79 @@ spatemp_value_check_NOLU2 <- function(xy_target,
   
   return(out)
 }
+##########################################################################
+
+spatial_outlier_detection <- function(xy_database, xts_database, params = list(
+  threshold_multiplier = 3.0,
+  weight_decay = NULL
+)) {
+compute_distance_matrix <- function() {
+  sensor_ids <- xy_database$ID
+  n <- length(sensor_ids)
+  dist_matrix <- matrix(0, nrow = n, ncol = n, dimnames = list(sensor_ids, sensor_ids))
+  
+  for (i in seq_len(n)) {
+    lat1 <- xy_database$LAT[i]
+    lon1 <- xy_database$LON[i]
+    for (j in seq_len(n)) {
+      lat2 <- xy_database$LAT[j]
+      lon2 <- xy_database$LON[j]
+      dist_matrix[i, j] <- distHaversine(c(lon1, lat1), c(lon2, lat2))
+    }
+  }
+  
+  return(as.data.frame(dist_matrix))
+}
+
+spatial_outlier_detection <- function(params = list(
+  threshold_multiplier = 3.0,
+  weight_decay = NULL
+)) {
+  
+  dist_matrix <- compute_distance_matrix()
+  diag(dist_matrix) <- NA
+  
+  if (is.null(params$weight_decay)) {
+    params$weight_decay <- median(as.numeric(dist_matrix), na.rm = TRUE)
+  }
+  
+  weight_matrix <- exp(- (as.matrix(dist_matrix)^2) / (2 * params$weight_decay^2))
+  weight_matrix[is.na(weight_matrix)] <- 0
+  
+  sensor_ids <- intersect(colnames(xts_database), xy_database$ID)
+  ts_data <- xts_database[, sensor_ids]
+  qc_data <- ts_data
+  qc_data_flagged <- ts_data
+  qc_data_flagged[] <- 0
+  
+  ts_arr <- as.matrix(ts_data)
+  time_index <- index(xts_database)
+  n_time <- nrow(ts_arr)
+  n_sensor <- ncol(ts_arr)
+  
+  for (t in seq_len(n_time)) {
+    x <- ts_arr[t, ]
+    valid_mask <- !is.na(x)
+    x_filled <- ifelse(is.na(x), 0, x)
+    
+    weight_sum <- rowSums(weight_matrix * valid_mask, na.rm = TRUE)
+    weighted_sum <- weight_matrix %*% x_filled
+    weighted_avg <- weighted_sum / weight_sum
+    
+    diff <- sweep(weight_matrix * valid_mask, 2, weighted_avg, "-")
+    weighted_var <- rowSums((diff^2) * valid_mask, na.rm = TRUE) / weight_sum
+    weighted_std <- sqrt(weighted_var)
+    
+    outlier_mask <- abs(x - weighted_avg) > params$threshold_multiplier * weighted_std & !is.na(x)
+    
+    qc_data[t, ] <- ifelse(outlier_mask, NA, x)
+    qc_data_flagged[t, ] <- as.integer(outlier_mask)
+  }
+  
+  return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
+}
+}
+
+
+
+
