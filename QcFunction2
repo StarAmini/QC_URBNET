@@ -86,33 +86,44 @@ tm_range_outliers_seasonal <- function(xts_vector, season_thresholds) {
 
 ###########################################################################################
 
-tm_temporal_outliers <- function(xts_vector,
-                                 min_diff = -5,
-                                 max_diff = 6){
+tm_temporal_outliers <- function(xts_vector, dt = 3, diff = 6) {
+  # Ensure the input is an xts object
+  if (!inherits(xts_vector, "xts")) {
+    stop("Input must be an xts object")
+  }
   
-  diffs1 <- c(xts_vector - stats::lag(xts_vector, k = -1))
-  diffs2 <- c(stats::lag(xts_vector, k = 1) - xts_vector)
+  time_index <- index(xts_vector)  # Extract time index
+  station_names <- colnames(xts_vector)  # Get column names (stations)
   
-  rm_dates1 <- which(diffs1 < min_diff | diffs1 > max_diff)
-  rm_dates2 <- which(diffs2 < min_diff | diffs2 > max_diff)
+  # Create output objects
+  qc_data <- xts_vector
+  qc_data_flagged <- xts_vector
+  qc_data_flagged[] <- 0  # Initialize all flags to 0
   
-  rm_dates <- intersect(rm_dates1, rm_dates2)
-  #union
-  #intersect
-  rm_dates <- time(xts_vector[rm_dates])
+  # Loop through each station (column)
+  for (station in station_names) {
+    X <- as.numeric(xts_vector[, station])  # Convert to numeric
+    n <- length(X)
+    PO <- rep(FALSE, n)  # Boolean vector for outliers
+    
+    # Identify outliers based on neighboring median
+    for (i in 1:n) {
+      neighbors <- max(1, i - dt):min(n, i + dt)
+      if (!is.na(X[i]) && sum(!is.na(X[neighbors])) >= (1 + dt)) {
+        PO[i] <- abs(X[i] - median(X[neighbors], na.rm = TRUE)) >= diff
+      }
+    }
+    
+    # Update flagged data
+    qc_data_flagged[PO, station] <- 1  # Mark outliers
+    qc_data[PO, station] <- NA  # Replace outliers with NA
+  }
   
-  qc_data <- qc_data_flagged <- xts_vector
-  qc_data[rm_dates] <- NA
-  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
-  qc_data_flagged[rm_dates] <- 1
-  
-  out <- list(
+  # Return a list similar to tm_temporal_outliers
+  return(list(
     qc_data = qc_data,
     qc_data_flagged = qc_data_flagged
-  )
-  
-  return(out)
-  
+  ))
 }
 
 ######################################################################################
