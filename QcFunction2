@@ -178,7 +178,7 @@ tm_persistence_outliers1 <- function(xts_vector, min_change = 0.04, n_window = 0
 
 tm_persistence_outliers2 <- function(xts_vector, n_window = 0.5, by = "10 min", length_out = 18) {
   # Custom function to calculate standard deviation with NA tolerance
-  custom_sd <- function(chunk, n_window = 0.5) {
+  custom_sd <- function(chunk, n_window) {
     n_nas <- sum(is.na(chunk))  # Count number of NAs
     if (n_nas > n_window * length(chunk)) {
       return(NA)  # Too many NAs, return NA
@@ -190,36 +190,29 @@ tm_persistence_outliers2 <- function(xts_vector, n_window = 0.5, by = "10 min", 
   # Apply rolling window of 3 hours (18 intervals for 10-minute data)
   rolling_sd <- zoo::rollapply(
     xts_vector,
-    width = 18,  # 18 intervals for 10-minute frequency (equivalent to 3 hours)
-    FUN = function(chunk) custom_sd(chunk, n_window = n_window),
+    width = 18,  # 18 intervals for 10-minute frequency (3 hours)
+    FUN = function(chunk) custom_sd(chunk, n_window),
     fill = NA,
-    align = "right"
+    align = "right"  # Assign results at the right end of the window
   )
   
-  # Flag windows with standard deviation == 0
-  flagged_periods <- rolling_sd == 0
-  flagged_timestamps <- which(flagged_periods)
+  # Flag periods where std deviation is NA or zero
+  flagged_periods <- is.na(rolling_sd) | rolling_sd == 0
+  flagged_timestamps <- index(xts_vector)[flagged_periods]
+
+  # Generate flagged date ranges
+  flagged_dates <- unique(unlist(lapply(flagged_timestamps, function(ts) {
+    seq(from = ts, by = by, length.out = length_out)
+  })))
+
+  # Ensure flagged dates are within the index
+  rm_dates <- flagged_dates[flagged_dates %in% index(xts_vector)]
   
-  # Generate flagged date ranges (covering the window of length `length_out`)
-  flagged_dates <- lapply(flagged_timestamps, function(ts) {
-    seq(from = index(xts_vector)[ts], by = by, length.out = length_out)
-  })
-  
-  # Concatenate flagged dates into a single vector
-  if (length(flagged_dates) == 0) {
-    rm_dates <- NULL
-  } else {
-    rm_dates <- unique(do.call("c", flagged_dates))
-  }
-  
-  # Ensure flagged dates are within the index of the original series
-  rm_dates <- rm_dates[rm_dates %in% index(xts_vector)]
-  
-  # Create cleaned data by setting flagged dates to NA
+  # Create flagged data
   qc_data <- xts_vector
   qc_data[rm_dates] <- NA
-  
-  # Create a binary flag series (1 for flagged, 0 for not flagged)
+
+  # Create binary flag series (1 for flagged, 0 otherwise)
   qc_data_flagged <- xts(rep(0, length(index(xts_vector))), order.by = index(xts_vector))
   qc_data_flagged[rm_dates] <- 1
   
