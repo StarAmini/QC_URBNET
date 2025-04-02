@@ -193,7 +193,7 @@ tm_persistence_outliers2 <- function(xts_vector, n_window = 0.5, by = "10 min", 
     width = 18,  # 18 intervals for 10-minute frequency (equivalent to 3 hours)
     FUN = function(chunk) custom_sd(chunk, n_window = n_window),
     fill = NA,
-    align = "right"  # Assign results at the right end of the window
+    align = "center"  # Assign results at the right end of the window
   )
   
   # Flag windows with standard deviation == 0
