@@ -246,9 +246,12 @@ tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "
 
   # Custom SD function with NA tolerance
   custom_sd <- function(x, na_tolerance = 0.5, min_non_na = 5) {
+  total_len <- length(x)
   n_valid <- sum(!is.na(x))
-  if ((sum(is.na(x)) > na_tolerance * length(x)) || (n_valid < min_non_na)) {
-    return(NA)
+  frac_na <- 1 - (n_valid / total_len)
+  
+  if (n_valid > min_non_na || frac_na > na_tolerance) {
+    return(NA)  # Skip window if too many NAs or too little data
   } else {
     return(sd(x, na.rm = TRUE))
   }
@@ -260,7 +263,7 @@ tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "
     rolling_sd <- rollapply(
   data = xts_vector[, station, drop = FALSE], 
   width = width, 
-  FUN = function(x) custom_sd(x, na_tolerance = na_tolerance, min_non_na = 5), 
+  FUN = function(x) custom_sd(x, na_tolerance = na_tolerance, min_non_na = min_non_na), 
   fill = NA, 
   align = "right"
 )
