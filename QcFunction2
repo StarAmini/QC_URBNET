@@ -226,7 +226,8 @@ tm_persistence_outliers1 <- function(xts_vector, n_window = 0.5, by = "10 min", 
   return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
 }
 
-tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "10 min") {
+
+tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "10 min", na_tolerance = 0.5) {
   
   # Ensure time series is not empty
   if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
@@ -242,17 +243,28 @@ tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "
   qc_data <- xts_vector
   qc_data_flagged <- xts(matrix(0, nrow = nrow(xts_vector), ncol = ncol(xts_vector)), order.by = index(xts_vector))
   colnames(qc_data_flagged) <- colnames(xts_vector)
+
+  # Custom SD function with NA tolerance
+  custom_sd <- function(x, na_tolerance = na_tolerance) {
+    n_nas <- sum(is.na(x))
+    if (n_nas > na_tolerance * length(x)) {
+      return(NA)  # Too many NAs, discard this window
+    } else {
+      return(sd(x, na.rm = TRUE))  # Calculate SD on available values
+    }
+  }
   
   # Loop through each station (column)
   for (station in colnames(xts_vector)) {
     # Compute rolling standard deviation
     rolling_sd <- rollapply(
-      data = xts_vector[, station, drop = FALSE], 
-      width = width, 
-      FUN = function(x) ifelse(all(!is.na(x)), sd(x, na.rm = TRUE), NA), 
-      fill = NA, 
-      align = "right"
+    data = xts_vector[, station, drop = FALSE], 
+    width = width, 
+    FUN = function(x) custom_sd(x, na_tolerance = na_tolerance), 
+    fill = NA, 
+    align = "right"
     )
+
     
     # Identify timestamps where SD is near zero
     flagged_timestamps <- index(xts_vector)[which(rolling_sd < 1e-10)]
