@@ -246,9 +246,8 @@ tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "
 
   # Custom SD function with NA tolerance
   custom_sd <- function(x, na_tolerance = 0.5, min_non_na = 5) {
-  n_nas <- sum(is.na(x))
   n_valid <- sum(!is.na(x))
-  if (n_nas > na_tolerance * length(x) || n_valid < min_non_na) {
+  if ((sum(is.na(x)) > na_tolerance * length(x)) || (n_valid < min_non_na)) {
     return(NA)
   } else {
     return(sd(x, na.rm = TRUE))
