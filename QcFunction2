@@ -302,7 +302,7 @@ tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "
   if (is.na(time_interval) || time_interval == 0) stop("Time index not recognized correctly.")
   
   # Compute number of intervals in a 3-hour window
-  width <- as.integer(180 / time_interval)  # 180 minutes / interval length in minutes
+  width <- as.integer(180 / time_interval) + 1  # 180 minutes / interval length in minutes
   
   # Initialize output xts objects
   qc_data <- xts_vector
