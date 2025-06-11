@@ -292,7 +292,7 @@ tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "
 
 
 
-tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "10 min", na_tolerance = 5, min_non_na = 1, threshold = 0.01) {
+tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "10 min", na_tolerance = 5, min_non_na = 1) {
   
   # Ensure time series is not empty
   if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
@@ -343,17 +343,12 @@ tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "
     flagged_timestamps <- index(xts_vector)[which(rolling_sd < threshold )]
     
     if (length(flagged_timestamps) > 0) {
-      # Expand flagged timestamps to include the full rolling window
       expanded_dates <- unique(do.call("c", lapply(flagged_timestamps, function(ts) {
-  # Find index position of the current timestamp
-  idx_pos <- which(index(xts_vector) == ts)
-  # Get the full rolling window back from that point
-  if (idx_pos - width + 1 >= 1) {
-    return(index(xts_vector)[(idx_pos - width + 1):idx_pos])
-  } else {
-    return(NULL)
-  }
+  seq(from = ts - (width - 1) * time_interval * 60, by = by, length.out = width)
 })))
+
+# Ensure flagged dates are within the dataset index
+expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
       
       # Flag data
       qc_data[expanded_dates, station] <- NA
