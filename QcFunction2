@@ -292,7 +292,7 @@ tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "
 
 
 
-tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "10 min", na_tolerance = 5, min_non_na = 1) {
+tm_persistence_outliers4 <- function(xts_vector, window_size = "3 hours", by = "10 min", na_tolerance = 5, min_non_na = 1) {
   
   # Ensure time series is not empty
   if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
@@ -357,6 +357,74 @@ expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
   }
   
   return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
+}
+
+
+tm_persistence_outliers3 <- function(xts_vector,
+                                     window_size  = "3 hours",
+                                     step         = "10 mins",
+                                     na_tolerance = 5,
+                                     min_non_na   = 1,
+                                     threshold    = 0.01) {
+  
+  if (NCOL(xts_vector) == 0)
+    stop("No stations detected in the dataset.")
+  
+  # Parse a string like "3 hours" or "10 mins" into a difftime
+  parse_dt <- function(txt) {
+    parts <- strsplit(txt, " +")[[1]]
+    val   <- as.numeric(parts[1])
+    unit  <- tolower(parts[2])
+    if (grepl("^hour", unit)) unit <- "hours"
+    if (grepl("^min",  unit)) unit <- "mins"
+    as.difftime(val, units = unit)
+  }
+  
+  win_dt  <- parse_dt(window_size)
+  step_dt <- parse_dt(step)
+  
+  # Prepare output
+  qc_data         <- xts_vector
+  qc_data_flagged <- xts(0, order.by = index(xts_vector))
+  qc_data_flagged <- do.call(merge,
+    replicate(NCOL(xts_vector), qc_data_flagged, simplify = FALSE)
+  )
+  colnames(qc_data_flagged) <- colnames(xts_vector)
+  
+  for (col in colnames(xts_vector)) {
+    # rolling SD over a time-based window, stepping by step_dt
+    rsd <- rollapply(
+      data      = xts_vector[, col, drop = FALSE],
+      width     = win_dt,
+      by        = step_dt,
+      FUN       = function(z) {
+        if (sum(is.na(z)) > na_tolerance ||
+            sum(!is.na(z)) < min_non_na) return(NA_real_)
+        sd(z, na.rm = TRUE)
+      },
+      align     = "right",
+      fill      = NA
+    )
+    
+    # find all end-times where the full window was “flat”
+    flat_ends <- index(rsd)[which(coredata(rsd) < threshold)]
+    if (length(flat_ends)) {
+      # for each such end-time, flag the whole preceding window
+      for (t_end in flat_ends) {
+        t_start <- t_end - win_dt + step_dt
+        to_flag <- index(xts_vector) >= t_start & index(xts_vector) <= t_end
+        coredata(qc_data_flagged[to_flag, col]) <- 1
+      }
+    }
+  }
+  
+  # actually blank out the flagged points
+  qc_data[qc_data_flagged == 1] <- NA
+  
+  return(list(
+    qc_data         = qc_data,
+    qc_data_flagged = qc_data_flagged
+  ))
 }
 
 
