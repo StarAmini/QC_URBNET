@@ -292,7 +292,79 @@ tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "
 
 
 
-tm_persistence_outliers4 <- function(xts_vector, window_size = "3 hours", by = "10 min", na_tolerance = 5, min_non_na = 1) {
+tm_persistence_outliers4 <- function(xts_vector,
+                                     window_hours = 3,
+                                     na_tolerance = 5,
+                                     min_non_na   = 1,
+                                     threshold    = 0.01) {
+  # 1. sanity checks
+  if (ncol(xts_vector) == 0) 
+    stop("No stations detected in the dataset.")
+  if (nrow(xts_vector) < 2) 
+    stop("Time series too short to compute intervals.")
+  
+  # 2. infer sampling interval in minutes
+  dt_mins <- as.numeric(
+    difftime(index(xts_vector)[2],
+             index(xts_vector)[1],
+             units = "mins")
+  )
+  if (is.na(dt_mins) || dt_mins <= 0) 
+    stop("Time index not recognized correctly.")
+  
+  # 3. prepare outputs
+  qc_data         <- xts_vector
+  qc_data_flagged <- xts(
+    matrix(0, nrow = nrow(xts_vector), ncol = ncol(xts_vector)),
+    order.by = index(xts_vector)
+  )
+  colnames(qc_data_flagged) <- colnames(xts_vector)
+  
+  # 4. custom SD that respects NA tolerance
+  custom_sd <- function(x) {
+    if (sum(is.na(x)) > na_tolerance || sum(!is.na(x)) < min_non_na) 
+      return(NA_real_)
+    sd(x, na.rm = TRUE)
+  }
+  
+  # 5. for each station, compute rolling SD & flag windows
+  window_secs <- window_hours * 3600
+  for (station in colnames(xts_vector)) {
+    # rolling SD (aligned right)
+    rolling_sd <- rollapply(
+      data  = xts_vector[, station, drop = FALSE],
+      width = floor(window_secs / (dt_mins * 60)) + 1,
+      FUN   = custom_sd,
+      fill  = NA,
+      align = "right"
+    )
+    
+    #  find timestamps where sd < threshold
+    bad_times <- index(xts_vector)[which(rolling_sd < threshold)]
+    if (length(bad_times) == 0) next
+    
+    #  build a logical mask of all rows that lie within 3h before any bad_time
+    times <- index(xts_vector)
+    to_flag <- rep(FALSE, length(times))
+    for (ts in bad_times) {
+      window_start <- ts - window_secs
+      to_flag <- to_flag | (times >= window_start & times <= ts)
+    }
+    
+    #  apply flags
+    qc_data[to_flag, station]         <- NA
+    qc_data_flagged[to_flag, station] <- 1
+  }
+  
+  list(
+    qc_data         = qc_data,
+    qc_data_flagged = qc_data_flagged
+  )
+}
+
+############################################################################################
+
+tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "15 min", na_tolerance = 5, min_non_na = 1, threshold = 0.01) { 
   
   # Ensure time series is not empty
   if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
@@ -343,12 +415,13 @@ tm_persistence_outliers4 <- function(xts_vector, window_size = "3 hours", by = "
     flagged_timestamps <- index(xts_vector)[which(rolling_sd < threshold )]
     
     if (length(flagged_timestamps) > 0) {
+      # Expand flagged timestamps to include the full rolling window
       expanded_dates <- unique(do.call("c", lapply(flagged_timestamps, function(ts) {
-  seq(from = ts - (width - 1) * time_interval * 60, by = by, length.out = width)
-})))
-
-# Ensure flagged dates are within the dataset index
-expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
+        seq(from = ts - (width - 1) * time_interval * 60, by = by, length.out = width)
+      })))
+      
+      # Ensure flagged dates are within the dataset index
+      expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
       
       # Flag data
       qc_data[expanded_dates, station] <- NA
@@ -359,73 +432,6 @@ expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
   return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
 }
 
-
-tm_persistence_outliers3 <- function(xts_vector,
-                                     window_size  = "3 hours",
-                                     step         = "10 mins",
-                                     na_tolerance = 5,
-                                     min_non_na   = 1,
-                                     threshold    = 0.01) {
-  
-  if (NCOL(xts_vector) == 0)
-    stop("No stations detected in the dataset.")
-  
-  # Parse a string like "3 hours" or "10 mins" into a difftime
-  parse_dt <- function(txt) {
-    parts <- strsplit(txt, " +")[[1]]
-    val   <- as.numeric(parts[1])
-    unit  <- tolower(parts[2])
-    if (grepl("^hour", unit)) unit <- "hours"
-    if (grepl("^min",  unit)) unit <- "mins"
-    as.difftime(val, units = unit)
-  }
-  
-  win_dt  <- parse_dt(window_size)
-  step_dt <- parse_dt(step)
-  
-  # Prepare output
-  qc_data         <- xts_vector
-  qc_data_flagged <- xts(0, order.by = index(xts_vector))
-  qc_data_flagged <- do.call(merge,
-    replicate(NCOL(xts_vector), qc_data_flagged, simplify = FALSE)
-  )
-  colnames(qc_data_flagged) <- colnames(xts_vector)
-  
-  for (col in colnames(xts_vector)) {
-    # rolling SD over a time-based window, stepping by step_dt
-    rsd <- rollapply(
-      data      = xts_vector[, col, drop = FALSE],
-      width     = win_dt,
-      by        = step_dt,
-      FUN       = function(z) {
-        if (sum(is.na(z)) > na_tolerance ||
-            sum(!is.na(z)) < min_non_na) return(NA_real_)
-        sd(z, na.rm = TRUE)
-      },
-      align     = "right",
-      fill      = NA
-    )
-    
-    # find all end-times where the full window was “flat”
-    flat_ends <- index(rsd)[which(coredata(rsd) < threshold)]
-    if (length(flat_ends)) {
-      # for each such end-time, flag the whole preceding window
-      for (t_end in flat_ends) {
-        t_start <- t_end - win_dt + step_dt
-        to_flag <- index(xts_vector) >= t_start & index(xts_vector) <= t_end
-        coredata(qc_data_flagged[to_flag, col]) <- 1
-      }
-    }
-  }
-  
-  # actually blank out the flagged points
-  qc_data[qc_data_flagged == 1] <- NA
-  
-  return(list(
-    qc_data         = qc_data,
-    qc_data_flagged = qc_data_flagged
-  ))
-}
 
 
 ###########################################################################################################33
