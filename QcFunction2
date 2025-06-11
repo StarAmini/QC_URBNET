@@ -290,12 +290,12 @@ tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "
   return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
 }
 
-
+###########################################################################################################
 
 tm_persistence_outliers4 <- function(xts_vector,
                                      window_hours = 3,
-                                     na_tolerance = 5,
-                                     min_non_na   = 1,
+                                     na_tolerance = 0.5,   # now a proportion of the window
+                                     min_non_na   = 1,     # still at least one non-NA
                                      threshold    = 0.01) {
   # 1. sanity checks
   if (ncol(xts_vector) == 0) 
@@ -304,15 +304,17 @@ tm_persistence_outliers4 <- function(xts_vector,
     stop("Time series too short to compute intervals.")
   
   # 2. infer sampling interval in minutes
-  dt_mins <- as.numeric(
-    difftime(index(xts_vector)[2],
-             index(xts_vector)[1],
-             units = "mins")
-  )
+  dt_mins <- as.numeric(difftime(index(xts_vector)[2],
+                                 index(xts_vector)[1],
+                                 units = "mins"))
   if (is.na(dt_mins) || dt_mins <= 0) 
     stop("Time index not recognized correctly.")
   
-  # 3. prepare outputs
+  # 3. compute window width in rows
+  window_secs <- window_hours * 3600
+  width       <- floor(window_secs / (dt_mins * 60)) + 1
+  
+  # 4. prepare outputs
   qc_data         <- xts_vector
   qc_data_flagged <- xts(
     matrix(0, nrow = nrow(xts_vector), ncol = ncol(xts_vector)),
@@ -320,46 +322,47 @@ tm_persistence_outliers4 <- function(xts_vector,
   )
   colnames(qc_data_flagged) <- colnames(xts_vector)
   
-  # 4. custom SD that respects NA tolerance
+  # 5. custom SD allowing up to na_tolerance fraction of NAs
   custom_sd <- function(x) {
-    if (sum(is.na(x)) > na_tolerance || sum(!is.na(x)) < min_non_na) 
+    total <- length(x)
+    n_na  <- sum(is.na(x))
+    if (n_na / total > na_tolerance)      # too many NAs
+      return(NA_real_)
+    if (sum(!is.na(x)) < min_non_na)      # not enough real data
       return(NA_real_)
     sd(x, na.rm = TRUE)
   }
   
-  # 5. for each station, compute rolling SD & flag windows
-  window_secs <- window_hours * 3600
+  # 6. loop each station
   for (station in colnames(xts_vector)) {
-    # rolling SD (aligned right)
     rolling_sd <- rollapply(
-      data  = xts_vector[, station, drop = FALSE],
-      width = floor(window_secs / (dt_mins * 60)) + 1,
+      xts_vector[, station, drop = FALSE],
+      width = width,
       FUN   = custom_sd,
       fill  = NA,
       align = "right"
     )
     
-    #  find timestamps where sd < threshold
     bad_times <- index(xts_vector)[which(rolling_sd < threshold)]
     if (length(bad_times) == 0) next
     
-    #  build a logical mask of all rows that lie within 3h before any bad_time
-    times <- index(xts_vector)
+    # build mask for all rows within 3h before any bad_time
+    times   <- index(xts_vector)
     to_flag <- rep(FALSE, length(times))
     for (ts in bad_times) {
       window_start <- ts - window_secs
       to_flag <- to_flag | (times >= window_start & times <= ts)
     }
     
-    #  apply flags
     qc_data[to_flag, station]         <- NA
     qc_data_flagged[to_flag, station] <- 1
   }
   
-  list(
+  # 7. return exactly what you asked for
+  return(list(
     qc_data         = qc_data,
     qc_data_flagged = qc_data_flagged
-  )
+  ))
 }
 
 ############################################################################################
