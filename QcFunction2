@@ -268,7 +268,7 @@ tm_persistence_outliers2 <- function(xts_vector, window_size = "3 hours", by = "
   align = "right"
 )
 
-    threshold <- 0.00001 
+    threshold <- 0.1 
     # Identify timestamps where SD is near zero
     flagged_timestamps <- index(xts_vector)[which(rolling_sd < threshold )]
     
