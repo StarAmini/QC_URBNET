@@ -416,20 +416,17 @@ tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "
     flagged_timestamps <- index(xts_vector)[which(rolling_sd < threshold)]
     
     if (length(flagged_timestamps) > 0) {
-      # Expand flagged timestamps to include the full rolling window
-      expanded_dates <- unique(do.call("c", lapply(flagged_timestamps, function(ts) {
-        seq(from = ts - (width - 1) * time_interval * 60, by = by, length.out = width)
-      })))
-      
-      # Ensure flagged dates are within the dataset index
-      expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
-      
-      # Flag data only if the difference between max and min in the window is below the diff_threshold
-      for (timestamp in expanded_dates) {
-        window_values <- xts_vector[timestamp - (width - 1):timestamp, station]
+      for (timestamp in flagged_timestamps) {
+        # Get the rolling window for this timestamp
+        start_index <- which(index(xts_vector) == timestamp) - (width - 1)
+        end_index <- which(index(xts_vector) == timestamp)
+        window_values <- xts_vector[start_index:end_index, station]
+        
+        # Check if the difference between max and min values in the window is smaller than diff_threshold
         if (max(window_values, na.rm = TRUE) - min(window_values, na.rm = TRUE) < diff_threshold) {
-          qc_data[timestamp, station] <- NA
-          qc_data_flagged[timestamp, station] <- 1
+          # Flag this window as persistent
+          qc_data[window_values, station] <- NA
+          qc_data_flagged[window_values, station] <- 1
         }
       }
     }
