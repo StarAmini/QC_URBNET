@@ -433,6 +433,7 @@ tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "
   return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
 }
 
+
 ############################################################################################
 
 tm_persistence_outliers3_2 <- function(xts_vector, window_size = "3 hours", by = "15 min", na_tolerance = 5, min_non_na = 1, threshold = 0.01) { 
