@@ -384,36 +384,36 @@ tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "
 
   # Custom SD function with NA tolerance
   custom_sd <- function(x, na_tolerance = 5, min_non_na = 1) {
-  # na_tolerance is now the max number of NAs allowed in the window
-  na_count <- sum(is.na(x))
-  
-  # skip if too many NAs
-  if (na_count > na_tolerance) {
-    return(NA_real_)
+    na_count <- sum(is.na(x))
+    
+    # Skip if too many NAs
+    if (na_count > na_tolerance) {
+      return(NA_real_)
+    }
+    
+    # Otherwise, require at least some non-NA data to compute SD
+    if (sum(!is.na(x)) < min_non_na) {
+      return(NA_real_)
+    }
+    
+    sd(x, na.rm = TRUE)
   }
-  
-  # Otherwise, require at least some non-NA data to compute SD
-  if (sum(!is.na(x)) < min_non_na) {
-    return(NA_real_)
-  }
-  
-  sd(x, na.rm = TRUE)
-}
   
   # Loop through each station (column)
   for (station in colnames(xts_vector)) {
     # Compute rolling standard deviation
     rolling_sd <- rollapply(
-  data  = xts_vector[, station, drop = FALSE],
-  width = width,
-  FUN   = function(z) custom_sd(z, na_tolerance = 5, min_non_na = 5),
-  fill  = NA,
-  align = "right"
-)
-
-    threshold <- 0.01 
-    # Identify timestamps where SD is near zero
-    flagged_timestamps <- index(xts_vector)[which(rolling_sd < threshold )]
+      data  = xts_vector[, station, drop = FALSE],
+      width = width,
+      FUN   = function(z) custom_sd(z, na_tolerance = na_tolerance, min_non_na = min_non_na),
+      fill  = NA,
+      align = "right"
+    )
+    
+    threshold <- 0.01  # Set threshold to detect persistence
+    
+    # Identify timestamps where SD is near zero (indicating persistence)
+    flagged_timestamps <- index(xts_vector)[which(rolling_sd < threshold)]
     
     if (length(flagged_timestamps) > 0) {
       # Expand flagged timestamps to include the full rolling window
@@ -424,7 +424,7 @@ tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "
       # Ensure flagged dates are within the dataset index
       expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
       
-      # Flag data
+      # Flag data: Mark those values as NA and record the flagged times
       qc_data[expanded_dates, station] <- NA
       qc_data_flagged[expanded_dates, station] <- 1
     }
