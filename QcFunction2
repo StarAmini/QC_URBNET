@@ -365,7 +365,7 @@ tm_persistence_outliers4 <- function(xts_vector,
   ))
 }
 ################################################
-tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "10 min", na_tolerance = 5, min_non_na = 1) {
+tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "10 min", na_tolerance = 5, min_non_na = 1, diff_threshold = 0.05) {
   
   # Ensure time series is not empty
   if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
@@ -398,7 +398,7 @@ tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "
     
     sd(x, na.rm = TRUE)
   }
-  
+
   # Loop through each station (column)
   for (station in colnames(xts_vector)) {
     # Compute rolling standard deviation
@@ -424,15 +424,19 @@ tm_persistence_outliers3 <- function(xts_vector, window_size = "3 hours", by = "
       # Ensure flagged dates are within the dataset index
       expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
       
-      # Flag data: Mark those values as NA and record the flagged times
-      qc_data[expanded_dates, station] <- NA
-      qc_data_flagged[expanded_dates, station] <- 1
+      # Flag data only if the difference between max and min in the window is below the diff_threshold
+      for (timestamp in expanded_dates) {
+        window_values <- xts_vector[timestamp - (width - 1):timestamp, station]
+        if (max(window_values, na.rm = TRUE) - min(window_values, na.rm = TRUE) < diff_threshold) {
+          qc_data[timestamp, station] <- NA
+          qc_data_flagged[timestamp, station] <- 1
+        }
+      }
     }
   }
   
   return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
 }
-
 ############################################################################################
 
 tm_persistence_outliers3_2 <- function(xts_vector, window_size = "3 hours", by = "15 min", na_tolerance = 5, min_non_na = 1, threshold = 0.01) { 
