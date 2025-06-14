@@ -434,75 +434,93 @@ tm_persistence_outliers3 <- function(
 
 ############################################################################################
 
-tm_persistence_outliers3_2 <- function(xts_vector, window_size = "3 hours", by = "15 min", na_tolerance = 5, min_non_na = 1, threshold = 0.01) { 
-  
-  # Ensure time series is not empty
+tm_persistence_outliers3_2 <- function(
+  xts_vector,
+  window_size   = "3 hours",
+  by            = "10 mins",
+  na_tolerance  = 5,
+  min_non_na    = 1,
+  threshold     = 0.01
+) {
   if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
-  
-  # Determine the interval between observations (assumes regular time series)
-  time_interval <- as.numeric(difftime(index(xts_vector)[2], index(xts_vector)[1], units = "mins"))
-  if (is.na(time_interval) || time_interval == 0) stop("Time index not recognized correctly.")
-  
-  # Compute number of intervals in a 3-hour window
-  width <- as.integer(180 / time_interval) + 1  # 180 minutes / interval length in minutes
-  
-  # Initialize output xts objects
-  qc_data <- xts_vector
-  qc_data_flagged <- xts(matrix(0, nrow = nrow(xts_vector), ncol = ncol(xts_vector)), order.by = index(xts_vector))
-  colnames(qc_data_flagged) <- colnames(xts_vector)
+  idx <- index(xts_vector)
+  if (length(idx) < 2) stop("Need at least two time points to determine interval.")
 
-  # Custom SD function with NA tolerance
-  custom_sd <- function(x, na_tolerance = 5, min_non_na = 1) {
-  # na_tolerance is now the max number of NAs allowed in the window
-  na_count <- sum(is.na(x))
-  
-  # skip if too many NAs
-  if (na_count > na_tolerance) {
-    return(NA_real_)
-  }
-  
-  # Otherwise, require at least some non-NA data to compute SD
-  if (sum(!is.na(x)) < min_non_na) {
-    return(NA_real_)
-  }
-  
-  sd(x, na.rm = TRUE)
-}
-  
-  # Loop through each station (column)
-  for (station in colnames(xts_vector)) {
-    # Compute rolling standard deviation
-    rolling_sd <- rollapply(
-  data  = xts_vector[, station, drop = FALSE],
-  width = width,
-  FUN   = function(z) custom_sd(z, na_tolerance = 5, min_non_na = 5),
-  fill  = NA,
-  align = "right"
-)
-
-    threshold <- 0.01 
-    # Identify timestamps where SD is near zero
-    flagged_timestamps <- index(xts_vector)[which(rolling_sd < threshold )]
-    
-    if (length(flagged_timestamps) > 0) {
-      # Expand flagged timestamps to include the full rolling window
-      expanded_dates <- unique(do.call("c", lapply(flagged_timestamps, function(ts) {
-        seq(from = ts - (width - 1) * time_interval * 60, by = by, length.out = width)
-      })))
-      
-      # Ensure flagged dates are within the dataset index
-      expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
-      
-      # Flag data
-      qc_data[expanded_dates, station] <- NA
-      qc_data_flagged[expanded_dates, station] <- 1
+  # Parse window_size into total seconds
+  parse_window_secs <- function(ws) {
+    if (inherits(ws, c("Duration", "Period"))) return(as.numeric(as.duration(ws), units = "secs"))
+    if (is.numeric(ws)) return(ws)
+    if (is.character(ws)) {
+      m <- regexec(
+        "^\\s*([0-9]+\\.?[0-9]*)\\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\\s*$",
+        ws,
+        ignore.case = TRUE
+      )
+      reg <- regmatches(ws, m)[[1]]
+      if (length(reg) == 3) {
+        val <- as.numeric(reg[2])
+        unit <- tolower(reg[3])
+        if (startsWith(unit, "h")) return(val * 3600)
+        if (startsWith(unit, "m")) return(val * 60)
+        return(val)
+      }
     }
+    stop("Invalid window_size format; use numeric seconds or strings like '3 hours'.")
   }
-  
-  return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
+
+  window_secs <- parse_window_secs(window_size)
+  # Ensure at least 3-hour minimum
+  min_secs <- 3 * 3600
+  if (window_secs < min_secs) {
+    warning("window_size less than 3 hours; enforcing minimum of 3 hours.")
+    window_secs <- min_secs
+  }
+
+  # Determine sampling interval via median of diffs
+  diffs_secs <- as.numeric(diff(idx), units = "secs")
+  time_interval_secs <- median(diffs_secs, na.rm = TRUE)
+  if (is.na(time_interval_secs) || time_interval_secs <= 0) stop("Time index not recognized correctly.")
+
+  # Compute number of points in the window
+  width_pts <- ceiling(window_secs / time_interval_secs)
+
+  # Prepare outputs
+  qc_data <- xts_vector
+  qc_flag <- xts(matrix(0, nrow = nrow(xts_vector), ncol = ncol(xts_vector)), order.by = idx)
+  colnames(qc_flag) <- colnames(xts_vector)
+
+  # Custom SD skipping all-zero windows
+  custom_sd <- function(z) {
+    if (sum(is.na(z)) > na_tolerance) return(NA_real_)
+    nz <- z[!is.na(z)]
+    if (length(nz) < min_non_na) return(NA_real_)
+    if (all(nz == 0)) return(NA_real_)
+    sd(nz)
+  }
+
+  # Loop stations
+  for (station in colnames(xts_vector)) {
+    x <- coredata(xts_vector[, station, drop = FALSE])
+    sd_roll <- rollapply(
+      x,
+      width = width_pts,
+      FUN = custom_sd,
+      fill = NA,
+      align = "right"
+    )
+
+    flags <- which(!is.na(sd_roll) & sd_roll < threshold & seq_along(sd_roll) >= width_pts)
+    if (!length(flags)) next
+
+    all_idx <- unique(unlist(lapply(flags, function(i) seq(i - width_pts + 1, i))))
+    ts_to_flag <- idx[all_idx]
+
+    qc_data[ts_to_flag, station] <- NA
+    qc_flag[ts_to_flag, station] <- 1
+  }
+
+  list(qc_data = qc_data, qc_data_flagged = qc_flag)
 }
-
-
 
 ###########################################################################################################33
 
