@@ -9,11 +9,20 @@ tm_gross_error <- function(xts_vector) {
   qc_data <- qc_data_flagged <- xts_vector
   
   # Set outlier values to NA in qc_data
-  qc_data[rm_dates] <- NA
+  if(length(rm_dates) > 0) {
+    
+    qc_data[rm_dates] <- NA
+    
+  }
   
   # Flag outliers in qc_data_flagged
   qc_data_flagged[!is.na(qc_data_flagged)] <- 0  # Default flag to 0
-  qc_data_flagged[rm_dates] <- 1  # Flag outliers as 1
+
+  if(length(rm_dates) > 0) {
+    
+    qc_data_flagged[rm_dates] <- 1  # Flag outliers as 1
+
+  }
   
   # Create the output list
   out <- list(
