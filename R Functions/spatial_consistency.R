@@ -22,223 +22,240 @@
 #' @import zoo
 #'
 #' @export
-spatial_consistency <- function(
-    timeseries_df,
-    metadata,
-    threshold_multiplier = 3.0,
-    weight_decay = NULL,
-    id_col = "ID",
-    distance_threshold_method = "std",
-    min_neighbors = 2,
-    min_threshold = 0.5
-) {
-  
-  # Function to compute the pairwise distance matrix.
-  # Distances are in meters.
-  compute_distance_matrix <- function(
-    metadata, id_col = "ID", lat_col = "LAT", lon_col = "LON"
-  ) {
-    sensor_ids <- metadata[[id_col]]
-    n <- length(sensor_ids)
-    dist_matrix <- matrix(0, nrow = n, ncol = n)
-    for (i in 1:n) {
-      lat1 <- metadata[i, lat_col]
-      lon1 <- metadata[i, lon_col]
-      for (j in 1:n) {
-        lat2 <- metadata[j, lat_col]
-        lon2 <- metadata[j, lon_col]
-        dist_matrix[i, j] <- distHaversine(c(lon1, lat1), c(lon2, lat2))
-      }
+# -------------------------------
+# Normalize metadata column names
+# -------------------------------
+guess_col <- function(df, candidates) {
+  cn <- names(df)
+  for (cand in candidates) {
+    hit <- grep(paste0("^", cand, "$|\\b", cand, "\\b"), cn, ignore.case = TRUE, value = TRUE)
+    if (length(hit)) return(hit[1])
+  }
+  NA_character_
+}
+
+id_col      <- if ("ID" %in% names(metadata)) "ID" else guess_col(metadata, c("id","sensor_id","station","station_id"))
+lat_col     <- if ("LAT" %in% names(metadata)) "LAT" else guess_col(metadata, c("lat","latitude","y"))
+lon_col     <- if ("LON" %in% names(metadata)) "LON" else guess_col(metadata, c("lon","long","longitude","x","lng"))
+landuse_col <- if ("Landuse" %in% names(metadata)) "Landuse" else guess_col(metadata, c("landuse","land_use","land use","lulc","class","surface"))
+
+rename_if <- function(df, from, to) {
+  if (!is.na(from) && from != to && from %in% names(df)) dplyr::rename(df, !!to := dplyr::all_of(from)) else df
+}
+
+metadata <- metadata |>
+  rename_if(id_col, "ID") |>
+  rename_if(lat_col, "LAT") |>
+  rename_if(lon_col, "LON") |>
+  rename_if(landuse_col, "Landuse")
+
+req <- c("ID","LAT","LON","Landuse")
+missing_req <- setdiff(req, names(metadata))
+if (length(missing_req)) stop("Metadata is missing columns: ", paste(missing_req, collapse = ", "))
+
+# Intersect station sets
+ts_cols <- colnames(if (inherits(qc_ts,"xts")) as.data.frame(qc_ts) else qc_ts)
+common_ids <- intersect(ts_cols, metadata$ID)
+if (!length(common_ids)) stop("No overlapping station IDs between qc_05_data and metadata.")
+
+# -------------------------------
+# Helpers
+# -------------------------------
+compute_distance_matrix <- function(metadata, id_col = "ID", lat_col = "LAT", lon_col = "LON") {
+  sensor_ids <- metadata[[id_col]]
+  n <- length(sensor_ids)
+  dist_matrix <- matrix(0, nrow = n, ncol = n)
+  for (i in 1:n) {
+    lat1 <- metadata[i, lat_col]; lon1 <- metadata[i, lon_col]
+    for (j in 1:n) {
+      lat2 <- metadata[j, lat_col]; lon2 <- metadata[j, lon_col]
+      dist_matrix[i, j] <- geosphere::distHaversine(c(lon1, lat1), c(lon2, lat2))
     }
-    rownames(dist_matrix) <- sensor_ids
-    colnames(dist_matrix) <- sensor_ids
-    return(as.data.frame(dist_matrix))
   }
+  rownames(dist_matrix) <- sensor_ids
+  colnames(dist_matrix) <- sensor_ids
+  as.data.frame(dist_matrix)
+}
+
+# -------------------------------
+# Spatial QC core (no plots)
+# -------------------------------
+spatial_outlier_detection <- function(timeseries_df, metadata,
+                                      threshold_multiplier = 6,  # k
+                                      abs_floor = 3,             # δ (°C)
+                                      id_col = "ID",
+                                      min_neighbors_req = 2,
+                                      neff_star = 1.5,
+                                      k_neighbors_cap = 5,
+                                      radius_cap_m = 3000,
+                                      weight_decay = NULL,
+                                      landuse_mode = c("strict","graded"),
+                                      return_diagnostics = TRUE) {
+  landuse_mode <- match.arg(landuse_mode)
   
-  # Compute full distance matrix.
-  dist_matrix <- compute_distance_matrix(metadata, id_col = id_col)
-  diag(dist_matrix) <- NA  # ignore self-distance
-  
-  # Set weight_decay to median distance if not provided.
+  # Distance + base weights
+  D <- compute_distance_matrix(metadata, id_col)
+  diag(D) <- NA
   if (is.null(weight_decay)) {
-    weight_decay <- median(as.matrix(dist_matrix), na.rm = TRUE)
+    weight_decay <- stats::median(as.matrix(D), na.rm = TRUE)
   }
+  W0 <- exp(-(as.matrix(D)^2) / (2 * weight_decay^2))
+  W0[is.na(W0)] <- 0
   
-  # Compute weights using a Gaussian kernel.
-  weight_matrix <- exp(- (as.matrix(dist_matrix)^2) / (2 * weight_decay^2))
-  weight_matrix[is.na(weight_matrix)] <- 0
-  
-  # Get sensor IDs present in both timeseries and metadata.
-  # Match sensor IDs from metadata and timeseries
+  # Align stations
   sensor_ids <- intersect(colnames(timeseries_df), metadata[[id_col]])
+  lu <- as.character(metadata$Landuse[match(sensor_ids, metadata[[id_col]])])
+  ok <- !is.na(lu) & nzchar(lu)
+  sensor_ids <- sensor_ids[ok]; lu <- lu[ok]
   
-  # Match land use for those sensor IDs
-  sensor_landuse <- as.character(metadata$Landuse[match(sensor_ids, metadata[[id_col]])])
+  D  <- as.matrix(D)[sensor_ids, sensor_ids, drop = FALSE]
+  W0 <- W0[sensor_ids, sensor_ids, drop = FALSE]
   
-  # Drop sensors with missing land use
-  valid_idx <- !is.na(sensor_landuse)
-  if (any(!valid_idx)) {
-    cat("Dropping sensors with missing land use:", paste(sensor_ids[!valid_idx], collapse = ", "), "\n")
+  # Land-use similarity
+  if (landuse_mode == "strict") {
+    LU <- outer(lu, lu, FUN = Vectorize(function(a,b) as.numeric(a == b)))
+  } else {
+    LU <- outer(lu, lu, FUN = Vectorize(function(a,b){
+      if (a == b) return(1)
+      if ((a %in% c("Vegetated Areas","Forests")) && (b %in% c("Vegetated Areas","Forests"))) return(0.4)
+      if ((a == "Water") || (b == "Water")) return(0.0)
+      if ((a %in% c("Sealed Areas") && b %in% c("Vegetated Areas","Forests")) ||
+          (b %in% c("Sealed Areas") && a %in% c("Vegetated Areas","Forests"))) return(0.0)
+      0.0
+    }))
   }
-  sensor_ids <- sensor_ids[valid_idx]
-  sensor_landuse <- sensor_landuse[valid_idx]
+  dimnames(LU) <- list(sensor_ids, sensor_ids)
   
-  # Reindex distance and weight matrices
-  dist_matrix <- as.matrix(dist_matrix)[sensor_ids, sensor_ids, drop = FALSE]
-  weight_matrix <- weight_matrix[sensor_ids, sensor_ids, drop = FALSE]
+  # Combine and hard-cap by radius
+  W <- W0 * LU
+  for (sid in rownames(W)) {
+    d <- D[sid, ]
+    cand <- names(d)[!is.na(d) & d <= radius_cap_m]
+    if (length(cand) == 0) {
+      W[sid, ] <- 0
+    } else {
+      ord <- order(d[cand])           # nearest first
+      keep <- cand[ord][seq_len(min(k_neighbors_cap, length(ord)))]
+      W[sid, !(colnames(W) %in% keep)] <- 0
+    }
+  }
+  # Safety: zero weights beyond cap
+  W[as.matrix(D) > radius_cap_m] <- 0
   
-  # Build numeric land use similarity matrix
-  landuse_sim_raw <- outer(sensor_landuse, sensor_landuse, 
-                           FUN = Vectorize(function(l1, l2) {
-                             if (l1 == l2) {
-                               return(1)
-                             } else if ((l1 %in% c("Vegetated Areas", "Forests")) &&
-                                        (l2 %in% c("Vegetated Areas", "Forests"))) {
-                               return(0.8)
-                             } else if ((l1 %in% c("Sealed Areas") && l2 %in% c("Vegetated Areas", "Forests")) ||
-                                        (l2 %in% c("Sealed Areas") && l1 %in% c("Vegetated Areas", "Forests"))) {
-                               return(0.0)
-                             } else if ((l1 == "Water" && l2 %in% c("Vegetated Areas", "Forests", "Sealed Areas")) ||
-                                        (l2 == "Water" && l1 %in% c("Vegetated Areas", "Forests", "Sealed Areas"))) {
-                               return(0.0)
-                             } else {
-                               return(0.5)
-                             }
-                           }))
-  
-  # Coerce to numeric matrix with proper dimensions and names
-  landuse_sim <- matrix(as.numeric(landuse_sim_raw),
-                        nrow = length(sensor_ids),
-                        dimnames = list(sensor_ids, sensor_ids))
-  
-  # Multiply the distance-based weight matrix by the landuse similarity.
-  weight_matrix <- weight_matrix * landuse_sim
-  
-  # If timeseries is a list (of xts objects), combine them into one xts object.
+  # Timeseries to matrix
   if (is.list(timeseries_df) && !inherits(timeseries_df, "xts")) {
     timeseries_df <- do.call(cbind, timeseries_df)
   }
-  
-  # If the timeseries is an xts object, convert it to a data frame and preserve the timestamps.
   if (inherits(timeseries_df, "xts")) {
-    ts_data <- as.data.frame(timeseries_df)
-    time_index <- index(timeseries_df)
-    rownames(ts_data) <- as.character(time_index)
+    ts_df <- as.data.frame(timeseries_df); time_index <- zoo::index(timeseries_df)
+    rownames(ts_df) <- as.character(time_index)
   } else {
-    ts_data <- timeseries_df
+    ts_df <- timeseries_df
+    time_index <- rownames(ts_df)
+    if (is.null(time_index)) time_index <- seq_len(nrow(ts_df))
+  }
+  ts_df <- ts_df[, sensor_ids, drop = FALSE]
+  
+  X <- as.matrix(ts_df)
+  n_time   <- nrow(X)
+  n_sensor <- ncol(X)
+  
+  cleaned <- ts_df
+  flagged <- ts_df; flagged[,] <- 0L
+  
+  # Optional diagnostics containers
+  if (isTRUE(return_diagnostics)) {
+    avg_mat <- matrix(NA_real_, n_time, n_sensor, dimnames = list(NULL, sensor_ids))
+    sd_mat  <- matrix(NA_real_, n_time, n_sensor, dimnames = list(NULL, sensor_ids))
+    eff_mat <- matrix(NA_real_, n_time, n_sensor, dimnames = list(NULL, sensor_ids))
   }
   
-  # --- Determine distance threshold ---
-  if (distance_threshold_method == "std") {
-    threshold_series <- apply(dist_matrix, 1, sd, na.rm = TRUE)
-  } else if (distance_threshold_method == "mean") {
-    threshold_series <- apply(dist_matrix, 1, mean, na.rm = TRUE)
-  } else if (is.numeric(distance_threshold_method)) {
-    threshold_series <- rep(distance_threshold_method, nrow(dist_matrix))
-    names(threshold_series) <- rownames(dist_matrix)
-  } else {
-    stop("Invalid distance_threshold_method. Use 'std', 'mean', or a numeric value.")
-  }
+  W2 <- W * W
+  abs_floor_vec <- rep(abs_floor, n_sensor)
   
-  # Zero out weights for neighbors that exceed the distance threshold.
-  k_neighbors <- 5
-  for (sensor in rownames(weight_matrix)) {
-    sensor_distances <- dist_matrix[sensor, ]
-    closest_indices <- order(sensor_distances, na.last = NA)[1:k_neighbors]
-    keep_ids <- names(sensor_distances)[closest_indices]
-    weight_matrix[sensor, !(colnames(weight_matrix) %in% keep_ids)] <- 0
-  }
-  
-  # Convert weight matrix to a numeric matrix (W).
-  W <- weight_matrix
-  
-  # Subset the timeseries data to the filtered sensor_ids.
-  ts_data <- ts_data[, sensor_ids, drop = FALSE]
-  cleaned_df <- ts_data
-  flagged_df <- ts_data
-  flagged_df[,] <- 0
-  
-  ts_arr <- as.matrix(ts_data)  # shape: (n_time, n_sensor)
-  n_time <- nrow(ts_arr)
-  n_sensor <- ncol(ts_arr)
-  
-  # Loop over each timestamp.
-  for (t in 1:n_time) {
-    x <- ts_arr[t, ]              # readings at time t
-    valid_mask <- ifelse(!is.na(x), 1, 0)  # binary mask of valid readings
+  for (t in seq_len(n_time)) {
+    x <- X[t, ]
+    valid_mask <- as.integer(!is.na(x))
     x_filled <- ifelse(is.na(x), 0, x)
     
-    # Compute sum of weights for valid neighbors.
-    weight_sum <- as.vector(W %*% valid_mask)
-    weighted_sum <- as.vector(W %*% (valid_mask * x_filled))
+    # Weighted mean
+    wsum <- as.vector(W %*% valid_mask)
+    xsum <- as.vector(W %*% (valid_mask * x_filled))
+    mu   <- xsum / wsum
+    mu[wsum == 0] <- NA_real_
     
-    weighted_avg <- weighted_sum / weight_sum
-    weighted_avg[weight_sum == 0] <- NA
+    # Weighted variance against mu_i (matrix-safe)
+    Xmat <- matrix(rep(x_filled, each = n_sensor), nrow = n_sensor)
+    Mmat <- matrix(mu, nrow = n_sensor, ncol = n_sensor)
+    diff <- Xmat - Mmat
+    valid_mat <- matrix(valid_mask, nrow = n_sensor, ncol = n_sensor, byrow = TRUE)
     
-    # Compute difference: outer difference between weighted_avg and x_filled.
-    diff_mat <- outer(weighted_avg, x_filled, FUN = function(a, b) b - a)
-    weighted_var <- rowSums((W * valid_mask) * (diff_mat^2)) / weight_sum
-    weighted_std <- sqrt(weighted_var)
+    num  <- rowSums((W * valid_mat) * (diff^2), na.rm = TRUE)
+    den  <- pmax(wsum, 1e-12)
+    sig2 <- num / den
+    sig2[wsum == 0] <- NA_real_
+    sig  <- sqrt(sig2)
     
-    # Count how many neighbors (nonzero weights) contributed.
-    neighbor_count <- rowSums(W * valid_mask > 0)
+    # Neighbor counts and effective support
+    n_neigh <- rowSums((W > 0) * valid_mat)
+    num_eff <- (rowSums(W * valid_mat))^2
+    den_eff <- rowSums((W2) * valid_mat)
+    neff    <- num_eff / pmax(den_eff, 1e-12)
     
-    # Flag as outlier if deviation is too high.
-    outlier_mask <- (threshold_multiplier * weighted_std > min_threshold) & 
-      (abs(x - weighted_avg) > threshold_multiplier * weighted_std) & 
-      (abs(x - weighted_avg) > 4) &
+    # Thresholds
+    thr_k <- threshold_multiplier * sig
+    
+    # Base rule
+    outlier <- (threshold_multiplier * sig > 0.5) &              # your min_threshold
+      (abs(x - mu) > thr_k) &
+      (abs(x - mu) > abs_floor_vec) &
       (!is.na(x))
-    # If a sensor does not have enough neighbors, do not flag.
-    outlier_mask[neighbor_count < min_neighbors] <- FALSE
     
-    cleaned_df[t, ] <- ifelse(outlier_mask, NA, x)
-    flagged_df[t, ] <- as.integer(outlier_mask)
+    # Support requirement: at least 2 neighbors OR Neff >= 1.5
+    support_ok <- (n_neigh >= min_neighbors_req) | (neff >= neff_star)
+    outlier <- outlier & support_ok & (wsum > 0)
     
-    # Debug output for each flagged sensor.
-    if (any(outlier_mask, na.rm = TRUE)) {
-      timestamp <- if (inherits(timeseries_df, "xts")) as.character(index(timeseries_df)[t]) else rownames(ts_data)[t]
-      for (i in which(outlier_mask)) {
-        sensor <- sensor_ids[i]
-        sensor_value <- x[i]
-        avg <- weighted_avg[i]
-        std <- weighted_std[i]
-        diff_val <- abs(sensor_value - avg)
-        cat(sprintf("Timestamp %s, Sensor %s:\n", timestamp, sensor))
-        cat(sprintf("  Reading = %f\n", sensor_value))
-        cat(sprintf("  Weighted Average = %f\n", avg))
-        cat(sprintf("  Weighted Std = %f\n", std))
-        cat(sprintf("  Absolute Difference = %f (Threshold = %f)\n", diff_val, threshold_multiplier * std))
-        cat("  Neighbor contributions:\n")
-        neighbor_info <- list()
-        for (j in 1:n_sensor) {
-          if (j != i && valid_mask[j] == 1) {
-            neighbor_id <- sensor_ids[j]
-            neighbor_weight <- W[i, j]
-            if (neighbor_weight > 0) {
-              neighbor_value <- x_filled[j]
-              neighbor_distance <- dist_matrix[sensor, neighbor_id]
-              neighbor_info[[length(neighbor_info) + 1]] <- list(
-                neighbor_id = neighbor_id,
-                neighbor_weight = neighbor_weight,
-                neighbor_value = neighbor_value,
-                neighbor_distance = neighbor_distance
-              )
-            }
-          }
-        }
-        if (length(neighbor_info) > 0) {
-          # Sort neighbor contributions by weight (decreasing).
-          neighbor_info <- neighbor_info[order(sapply(neighbor_info, function(n) n$neighbor_weight), decreasing = TRUE)]
-          # Print top 5 contributions.
-          for (info in neighbor_info) {
-            cat(sprintf("    %s: weight = %.3f, value = %s, distance = %.2f meters\n",
-                        info$neighbor_id, info$neighbor_weight, info$neighbor_value, info$neighbor_distance))
-          }
-        }
-        cat(strrep("-", 40), "\n")
-      }
+    cleaned[t, ] <- ifelse(outlier, NA, x)
+    flagged[t, ] <- as.integer(outlier)
+    
+    if (isTRUE(return_diagnostics)) {
+      avg_mat[t, ] <- mu
+      sd_mat[t, ]  <- sig
+      eff_mat[t, ] <- neff
     }
   }
   
-  return(list(cleaned_df = cleaned_df, flagged_df = flagged_df))
+  # Return xts if input was xts
+  if (inherits(timeseries_df, "xts")) {
+    cleaned <- xts::xts(as.matrix(cleaned), order.by = as.POSIXct(time_index))
+    flagged <- xts::xts(as.matrix(flagged), order.by = as.POSIXct(time_index))
+  }
+  
+  out <- list(cleaned_df = cleaned, flagged_df = flagged)
+  
+  if (isTRUE(return_diagnostics)) {
+    # Build a compact diagnostics long table (no plots)
+    time_col <- if (inherits(timeseries_df,"xts")) as.POSIXct(time_index) else time_index
+    long <- data.frame(
+      time    = rep(time_col, each = n_sensor),
+      station = rep(colnames(X),  times = n_time),
+      avg     = as.vector(avg_mat),
+      sigma   = as.vector(sd_mat),
+      Neff    = as.vector(eff_mat),
+      flagged = as.vector(as.matrix(flagged)),
+      stringsAsFactors = FALSE
+    )
+    out$diagnostics <- list(long = long, sensor_ids = sensor_ids)
+  }
+  
+  out
 }
+
+# -------------------------------
+# Run per-month, stitch, save
+# -------------------------------
+# Build month keys from qc_ts
+idx <- if (inherits(qc_ts,"xts")) zoo::index(qc_ts) else rownames(qc_ts)
+if (is.null(idx)) stop("qc_ts has no time index or rownames.")
+idx <- as.POSIXct(idx, tz = "UTC")
+month_keys <- unique(format(idx, "%Y-%m"))
