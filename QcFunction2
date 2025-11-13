@@ -371,73 +371,100 @@ tm_persistence_outliers3_main <- function(xts_vector, window_size = "3 hours", b
 
 tm_persistence_outliersadapted <- function(
     xts_vector,
-    window_size = "3 hours",
-    by = "10 min",
-    na_tolerance = 5,
-    min_non_na = 1,
-    diff_threshold = 0   # 0 = exact flatline, >0 = allow small wiggles
+    window_size   = "3 hours",
+    by            = "10 min",
+    na_tolerance  = 5,
+    min_non_na    = 2,      # need at least 2 points to compute diff
+    round_digits  = 2,      # <-- NEW DEFAULT : round to 0.01 °C
+    diff_threshold = 0      # flatline test after rounding
 ) {
-  
-  # Ensure input is xts
+  # Required packages
+  # library(xts)
+  # library(zoo)
+
+  # Basic checks
   if (!inherits(xts_vector, "xts")) stop("Input must be an xts object.")
-  if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
-  
-  # Determine interval between observations (minutes)
-  time_interval <- as.numeric(difftime(index(xts_vector)[2], index(xts_vector)[1], units = "mins"))
-  if (is.na(time_interval) || time_interval <= 0) stop("Time index not recognized correctly.")
-  
+  if (ncol(xts_vector) == 0) stop("No stations detected.")
+  if (nrow(xts_vector) < 2) stop("Need at least 2 observations.")
+
+  # Determine sampling interval
+  time_interval <- as.numeric(
+    difftime(index(xts_vector)[2], index(xts_vector)[1], units = "mins")
+  )
+  if (is.na(time_interval) || time_interval <= 0)
+    stop("Time index not recognized.")
+
   # Rolling window width (3 hours = 180 min)
-  width <- as.integer(180 / time_interval) + 1
-  
+  window_minutes <- 180
+  width <- as.integer(window_minutes / time_interval) + 1L
+  if (width < 2L) width <- 2L
+
   # Output objects
   qc_data <- xts_vector
-  qc_data_flagged <- xts(matrix(0, nrow = nrow(xts_vector), ncol = ncol(xts_vector)),
-                         order.by = index(xts_vector))
+  qc_data_flagged <- xts(
+    matrix(0, nrow = nrow(xts_vector), ncol = ncol(xts_vector)),
+    order.by = index(xts_vector)
+  )
   colnames(qc_data_flagged) <- colnames(xts_vector)
-  
-  # Loop per station
+
+  # Process each station
   for (station in colnames(xts_vector)) {
-    
+
     x <- xts_vector[, station, drop = FALSE]
-    
-    # --- Flatline persistence: rolling check where dT/dt = 0 ---
-    flatline <- rollapply(
-      data = x,
+    if (NROW(x) < width) next
+
+    # Rolling flatline detection
+    flatline <- zoo::rollapply(
+      data  = x,
       width = width,
-      FUN = function(z) {
+      FUN   = function(z) {
         z <- as.numeric(z)
+
+        # too many NAs?
         if (sum(is.na(z)) > na_tolerance) return(FALSE)
+
+        # remove NAs
         z <- z[!is.na(z)]
+
+        # need at least 2 points
         if (length(z) < min_non_na) return(FALSE)
+
+        # round to desired resolution (0.01 °C)
+        z <- round(z, round_digits)
+
+        # flatline test on rounded values
         all(abs(diff(z)) <= diff_threshold)
       },
-      fill = FALSE,
+      fill  = NA,
       align = "right"
     )
-    
-    flagged_timestamps <- index(xts_vector)[which(flatline)]
-    
+
+    flatline_logical <- as.logical(zoo::coredata(flatline))
+    flagged_rows <- which(!is.na(flatline_logical) & flatline_logical)
+
+    if (!length(flagged_rows)) next
+
+    flagged_timestamps <- index(x)[flagged_rows]
+
     # Expand flagged timestamps across window
-    if (length(flagged_timestamps) > 0) {
-      expanded_dates <- unique(do.call("c", lapply(flagged_timestamps, function(ts) {
-        seq(
-          from = ts - (width - 1) * time_interval * 60,
-          by = by,
-          length.out = width
-        )
-      })))
-      
-      # Keep only timestamps that exist in the dataset
-      expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
-      
-      # Apply flags
-      qc_data[expanded_dates, station] <- NA
-      qc_data_flagged[expanded_dates, station] <- 1
-    }
+    expanded_dates <- unique(do.call("c", lapply(flagged_timestamps, function(ts) {
+      seq(
+        from = ts - (width - 1) * time_interval * 60,
+        by   = by,
+        length.out = width
+      )
+    })))
+
+    # Keep only timestamps in dataset
+    expanded_dates <- expanded_dates[expanded_dates %in% index(xts_vector)]
+
+    # Apply flags
+    qc_data[expanded_dates, station]         = NA
+    qc_data_flagged[expanded_dates, station] = 1
   }
-  
+
   return(list(
-    qc_data = qc_data,
+    qc_data         = qc_data,
     qc_data_flagged = qc_data_flagged
   ))
 }
