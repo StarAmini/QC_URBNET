@@ -74,10 +74,10 @@ tm_range_outliers_seasonal <- function(xts_vector, season_thresholds) {
     
     # Identify indices outside threshold range for this season
     outlier_indices <- which(xts_vector < thresholds$min_val | 
-                               xts_vector > thresholds$max_val)
-    
+                         xts_vector > thresholds$max_val)
+
     # Apply the season mask
-    rm_dates<- outlier_indices[season_mask[outlier_indices]]
+     rm_dates <- outlier_indices[seasons[outlier_indices] == season]
     
     # Set flagged and cleaned data for the outliers
     qc_data[rm_dates] <- NA
