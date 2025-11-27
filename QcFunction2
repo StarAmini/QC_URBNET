@@ -374,91 +374,64 @@ tm_persistence_outliers3_main <- function(xts_vector, window_size = "3 hours", b
 tm_persistence_outliersadapted <- function(
     xts_vector,
     window_size = "3 hours",
+    by = "10 min",
     na_tolerance = 5,
     min_non_na = 1,
-    diff_threshold = 0   # 0 = flatline, >0 = "nearly flat"
+    diff_threshold = 0
 ) {
 
-  if (!inherits(xts_vector, "xts"))
-    stop("Input must be an xts object.")
+  # Ensure input is xts
+  if (!inherits(xts_vector, "xts")) stop("Input must be an xts object.")
+  if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
+  if (nrow(xts_vector) < 2) stop("Need at least 2 observations to compute differences.")
 
-  if (ncol(xts_vector) == 0)
-    stop("No stations found.")
+  # Determine interval between observations (minutes)
+  time_interval <- as.numeric(difftime(index(xts_vector)[2], index(xts_vector)[1], units = "mins"))
+  if (is.na(time_interval) || time_interval <= 0) stop("Time index not recognized correctly.")
 
-  # ------------------------------------------------------
-  # 1) Determine sampling interval & rolling window width
-  # ------------------------------------------------------
-  time_index <- index(xts_vector)
-  dt_minutes <- as.numeric(difftime(time_index[2], time_index[1], units = "mins"))
+  # Rolling window width (3 hours = 180 min)
+  width <- as.integer(180 / time_interval) + 1
 
-  if (is.na(dt_minutes) || dt_minutes <= 0)
-    stop("Time index not suitable or irregular.")
-
-  window_minutes <- as.numeric(as.difftime(window_size, units = "mins"))
-  width <- as.integer(window_minutes / dt_minutes) + 1
-
-  if (width < 2)
-    stop("Window width too small.")
-
-  # ------------------------------------------------------
-  # 2) Prepare outputs
-  # ------------------------------------------------------
+  # Output objects
   qc_data <- xts_vector
   qc_data_flagged <- xts(
     matrix(0, nrow = nrow(xts_vector), ncol = ncol(xts_vector)),
-    order.by = time_index
+    order.by = index(xts_vector)
   )
   colnames(qc_data_flagged) <- colnames(xts_vector)
 
-  n <- nrow(xts_vector)
-
-  # ------------------------------------------------------
-  # 3) Process per station
-  # ------------------------------------------------------
+  # Loop per station
   for (station in colnames(xts_vector)) {
 
-    x <- as.numeric(xts_vector[, station])
+    x <- xts_vector[, station, drop = FALSE]
 
-    if (n < width) next
+    if (NROW(x) < width) next
 
-    # ------------------------------------------------------
-    # 3A) Rolling flatline detection via differences
-    # ------------------------------------------------------
-    # diff(x) is NA where x has missing values → safe
-    dx <- abs(diff(x))
-
-    # dx[i] corresponds to x[i+1] - x[i]
-    # We need rolling windows of size (width - 1) on dx
-    dx_roll <- zoo::rollapply(
-      dx,
-      width = width - 1,
+    # Rolling flatline detection
+    flatline <- zoo::rollapply(
+      data = x,
+      width = width,
       FUN = function(z) {
-        # Count NA tolerance
+        z <- as.numeric(z)
         if (sum(is.na(z)) > na_tolerance) return(FALSE)
-        # At least min_non_na usable points?
-        if (sum(!is.na(z)) < min_non_na) return(FALSE)
-        all(z <= diff_threshold, na.rm = TRUE)
+        z <- z[!is.na(z)]
+        if (length(z) < max(min_non_na, 2)) return(FALSE)
+        all(abs(diff(z)) <= diff_threshold)
       },
-      fill = FALSE,
+      fill = NA,
       align = "right"
     )
 
-    # dx_roll length is (n - 1), align to x indices
-    flatline_logical <- c(FALSE, dx_roll)
+    flatline_logical <- as.logical(coredata(flatline))
+    flagged_rows <- which(flatline_logical)
+    if (length(flagged_rows) == 0) next
 
-    flagged_idx <- which(flatline_logical)
-    if (length(flagged_idx) == 0) next
-
-    # ------------------------------------------------------
-    # 3B) Expand flagged positions by window *using row indices*
-    # ------------------------------------------------------
-    expanded_idx <- unique(unlist(lapply(flagged_idx, function(i) {
+    # DETERMINISTIC WINDOW EXPANSION (NO seq.POSIXt)
+    expanded_idx <- unique(unlist(lapply(flagged_rows, function(i) {
       max(1, i - width + 1):i
     })))
 
-    # ------------------------------------------------------
-    # 3C) Apply QC flags
-    # ------------------------------------------------------
+    # Apply flags using indices
     qc_data[expanded_idx, station] <- NA
     qc_data_flagged[expanded_idx, station] <- 1
   }
