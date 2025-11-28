@@ -113,24 +113,46 @@ tm_temporal_outliers <- function(xts_vector, dt = 3, diff = 6) {
   
   # Loop through each station (column)
   for (station in station_names) {
-    X <- as.numeric(xts_vector[, station])  # Convert to numeric
-    n <- length(X)
-    PO <- rep(FALSE, n)  # Boolean vector for outliers
     
-    # Identify outliers based on neighboring median
+    X <- as.numeric(xts_vector[, station])
+    n <- length(X)
+    PO <- rep(FALSE, n)
+    
     for (i in 1:n) {
-      neighbors <- max(1, i - dt):min(n, i + dt)
-      if (!is.na(X[i]) && sum(!is.na(X[neighbors])) >= (1 + dt)) {
-        PO[i] <- abs(X[i] - median(X[neighbors], na.rm = TRUE)) >= diff
-      }
+      
+      # ----- define left window -----
+      left_idx <- (i - dt):(i - 1)
+      
+      # skip if left window goes out of bounds
+      if (min(left_idx) < 1) next
+      
+      left_vals <- X[left_idx]
+      if (sum(!is.na(left_vals)) < dt) next
+      
+      left_med <- median(left_vals, na.rm = TRUE)
+      
+      # ----- define right window -----
+      right_idx <- (i + 1):(i + dt)
+      
+      # skip if right window goes out of bounds
+      if (max(right_idx) > n) next
+      
+      right_vals <- X[right_idx]
+      if (sum(!is.na(right_vals)) < dt) next
+      
+      right_med <- median(right_vals, na.rm = TRUE)
+      
+      # ----- flag only if BOTH deviations >= diff -----
+      cond_left  <- abs(X[i] - left_med)  >= diff
+      cond_right <- abs(X[i] - right_med) >= diff
+      
+      PO[i] <- cond_left && cond_right
     }
     
-    # Update flagged data
-    qc_data_flagged[PO, station] <- 1  # Mark outliers
-    qc_data[PO, station] <- NA  # Replace outliers with NA
+    qc_data_flagged[PO, station] <- 1
+    qc_data[PO, station] <- NA
   }
   
-  # Return a list similar to tm_temporal_outliers
   return(list(
     qc_data = qc_data,
     qc_data_flagged = qc_data_flagged
