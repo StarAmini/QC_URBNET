@@ -463,8 +463,15 @@ tm_persistence_outliersadapted0 <- function(
   time_interval <- as.numeric(difftime(index(xts_vector)[2], index(xts_vector)[1], units = "mins"))
   if (is.na(time_interval) || time_interval <= 0) stop("Time index not recognized correctly.")
 
-  # Rolling window width (3 hours = 180 min)
-  width <- as.integer(180 / time_interval) + 1
+ # ----------------------------------------------------------
+  # 🔥 Convert window_size ("3 hours", "180 min", "12 hours") → minutes
+  # ----------------------------------------------------------
+  window_minutes <- as.numeric(as.difftime(window_size, units = "mins"))
+  if (is.na(window_minutes)) stop("window_size must be a valid time string, e.g., '3 hours', '180 min'.")
+
+  # Rolling window width (# of observations)
+  width <- as.integer(window_minutes / time_interval) + 1
+  # ----------------------------------------------------------
 
   # Output objects
   qc_data <- xts_vector
