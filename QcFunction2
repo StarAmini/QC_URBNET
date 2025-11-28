@@ -117,7 +117,8 @@ tm_temporal_outliers <- function(xts_vector, dt = 3, diff = 6) {
     X <- as.numeric(xts_vector[, station])
     n <- length(X)
     PO <- rep(FALSE, n)
-    
+
+
     for (i in 1:n) {
       
       # ----- define left window -----
@@ -148,11 +149,13 @@ tm_temporal_outliers <- function(xts_vector, dt = 3, diff = 6) {
       
       PO[i] <- cond_left && cond_right
     }
-    
+
     qc_data_flagged[PO, station] <- 1
     qc_data[PO, station] <- NA
+
   }
-  
+
+
   return(list(
     qc_data = qc_data,
     qc_data_flagged = qc_data_flagged
