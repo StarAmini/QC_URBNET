@@ -98,44 +98,55 @@ tm_range_outliers_seasonal <- function(xts_vector, season_thresholds) {
 ###########################################################################################
 
 tm_temporal_outliers <- function(xts_vector, dt = 3, diff = 6) {
-  if (!inherits(xts_vector, "xts")) stop("Input must be an xts object")
-  
+  if (!inherits(xts_vector, "xts")) {
+    stop("Input must be an xts object")
+  }
+
+  station_names <- colnames(xts_vector)
   qc_data <- xts_vector
   qc_data_flagged <- xts_vector
   qc_data_flagged[] <- 0
-  
-  for (station in colnames(xts_vector)) {
+
+  for (station in station_names) {
     X <- as.numeric(xts_vector[, station])
     n <- length(X)
     PO <- rep(FALSE, n)
-    
+
     for (i in 1:n) {
       if (is.na(X[i])) next
+
       neighbors <- max(1, i - dt):min(n, i + dt)
       if (sum(!is.na(X[neighbors])) < (1 + dt)) next
-      
-      med_val <- median(X[neighbors], na.rm = TRUE)
-      med_diff <- abs(X[i] - med_val)
-      if (med_diff <= diff) next
-      
-      left_diff <- if (!is.na(X[i - 1])) abs(X[i] - X[i - 1]) else NA
-      right_diff <- if (!is.na(X[i + 1])) abs(X[i] - X[i + 1]) else NA
-      
-      # If both sides exist, both must exceed diff
-      if (!is.na(left_diff) && !is.na(right_diff)) {
-        if (left_diff > diff && right_diff > diff) PO[i] <- TRUE
-      } else {
-        # If only one side exists, flag if median difference exceeds diff
-        PO[i] <- TRUE
-      }
+
+      # Full window median
+      full_median <- median(X[neighbors], na.rm = TRUE)
+      if (abs(X[i] - full_median) < diff) next
+
+      # Check before median
+      before_idx <- max(1, i - dt):(i - 1)
+      before_vals <- X[before_idx]
+      before_vals <- before_vals[!is.na(before_vals)]
+      if (length(before_vals) == 0 || abs(X[i] - median(before_vals)) < diff) next
+
+      # Check after median
+      after_idx <- (i + 1):min(n, i + dt)
+      after_vals <- X[after_idx]
+      after_vals <- after_vals[!is.na(after_vals)]
+      if (length(after_vals) == 0 || abs(X[i] - median(after_vals)) < diff) next
+
+      PO[i] <- TRUE
     }
-    
+
     qc_data_flagged[PO, station] <- 1
     qc_data[PO, station] <- NA
   }
-  
-  return(list(qc_data = qc_data, qc_data_flagged = qc_data_flagged))
+
+  return(list(
+    qc_data = qc_data,
+    qc_data_flagged = qc_data_flagged
+  ))
 }
+
 
 ###########################################################################################################
 tm_persistence_outliers3_main <- function(xts_vector, window_size = "3 hours", by = "10 min", na_tolerance = 5, min_non_na = 1) {
