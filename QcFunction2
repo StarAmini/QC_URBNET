@@ -3,7 +3,7 @@
 tm_gross_error <- function(xts_vector) {
   
   # Identify dates with outliers (values > 60 or < -40)
-  row_mask <- apply(xts_vector, 1, function(x) any(x > 60 | x < -40, na.rm = TRUE))
+  row_mask <- apply(xts_vector, 1, function(x) any(x > 60 | x <= -40, na.rm = TRUE))
 
   rm_dates <- index(xts_vector)[row_mask]
   
