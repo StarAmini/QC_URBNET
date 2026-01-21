@@ -28,25 +28,44 @@ time_consistency <- function(xts_vector, dt = 3, diff = 6) {
   
   time_index <- index(xts_vector)  # Extract time index
   
-  # Create output objects
-  qc_data <- qc_data_flagged <- xts_vector[, 1]
-  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
-  
-  X <- as.numeric(xts_vector[, 1])  # Convert to numeric
-  n <- length(X)
-  PO <- rep(FALSE, n)  # Boolean vector for outliers
-  
-  # Identify outliers based on neighboring median
-  for (i in 1:n) {
-    neighbors <- max(1, i - dt):min(n, i + dt)
-    if (!is.na(X[i]) && sum(!is.na(X[neighbors])) >= (1 + dt)) {
-      PO[i] <- abs(X[i] - median(X[neighbors], na.rm = TRUE)) >= diff
+  station_names <- colnames(xts_vector)
+  qc_data <- xts_vector
+  qc_data_flagged <- xts_vector
+  qc_data_flagged[] <- 0
+
+  for (station in station_names) {
+    X <- as.numeric(xts_vector[, station])
+    n <- length(X)
+    PO <- rep(FALSE, n)
+
+    for (i in 1:n) {
+      if (is.na(X[i])) next
+
+      neighbors <- max(1, i - dt):min(n, i + dt)
+      if (sum(!is.na(X[neighbors])) < (1 + dt)) next
+
+      # Full window median
+      full_median <- median(X[neighbors], na.rm = TRUE)
+      if (abs(X[i] - full_median) < diff) next
+
+      # Check before median
+      before_idx <- max(1, i - dt):(i - 1)
+      before_vals <- X[before_idx]
+      before_vals <- before_vals[!is.na(before_vals)]
+      if (length(before_vals) == 0 || abs(X[i] - median(before_vals)) < diff) next
+
+      # Check after median
+      after_idx <- (i + 1):min(n, i + dt)
+      after_vals <- X[after_idx]
+      after_vals <- after_vals[!is.na(after_vals)]
+      if (length(after_vals) == 0 || abs(X[i] - median(after_vals)) < diff) next
+
+      PO[i] <- TRUE
     }
+
+    qc_data_flagged[PO, station] <- 1
+    qc_data[PO, station] <- NA
   }
-  
-  # Update flagged data
-  qc_data_flagged[PO] <- 1  # Mark outliers
-  qc_data[PO] <- NA  # Replace outliers with NA
 
   return(list(
     qc_data = qc_data,
