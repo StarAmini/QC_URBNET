@@ -24,12 +24,28 @@ gross_errors <- function(xts_vector) {
   if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
   
   # Identify dates with outliers (values > 60 or < -40)
-  rm_dates <- time(xts_vector[xts_vector[,1] >= 60 | xts_vector[,1] <= -40])
+  row_mask <- apply(xts_vector, 1, function(x) any(x > 60 | x <= -40, na.rm = TRUE))
+
+  rm_dates <- index(xts_vector)[row_mask]
   
-  qc_data <- qc_data_flagged <- xts_vector[, 1]
-  qc_data[as.POSIXct(rm_dates, tz="UTC")] <- NA
-  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
-  qc_data_flagged[as.POSIXct(rm_dates, tz="UTC")] <- 1
+  # Create a copy of the input data for cleaning and flagging
+  qc_data <- qc_data_flagged <- xts_vector
+  
+  # Set outlier values to NA in qc_data
+  if(length(rm_dates) > 0) {
+    
+    qc_data[rm_dates] <- NA
+    
+  }
+
+  # Flag outliers in qc_data_flagged
+  qc_data_flagged[!is.na(qc_data_flagged)] <- 0  # Default flag to 0
+
+  if(length(rm_dates) > 0) {
+    
+    qc_data_flagged[rm_dates] <- 1  # Flag outliers as 1
+
+  }
   
   # Create the output list
   out <- list(
