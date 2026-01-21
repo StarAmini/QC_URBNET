@@ -50,8 +50,10 @@ out_of_range <- function(
   dates <- index(xts_vector)
   seasons <- sapply(dates, get_season)  # Determine season for each date
   
-  qc_data <- qc_data_flagged <- xts_vector[, 1]
-  qc_data_flagged[!is.na(qc_data_flagged)] <- 0
+  qc_data <- xts_vector  # Initialize cleaned data
+  qc_data_flagged <- xts_vector  # Initialize flagged data
+  
+  qc_data_flagged[] <- 0  # Default: no flags
   
   for (season in names(season_thresholds)) {
     # Retrieve seasonal thresholds
@@ -59,13 +61,15 @@ out_of_range <- function(
     season_mask <- seasons == season  # Identify dates in the current season
     
     # Identify indices outside threshold range for this season
-    outlier_indices <- which((xts_vector[, 1] < thresholds$min_val | 
-                               xts_vector[, 1] > thresholds$max_val) &
-                               season_mask)
+    outlier_indices <- which(xts_vector < thresholds$min_val | 
+                         xts_vector > thresholds$max_val)
+    
+     # Apply the season mask
+     rm_dates <- outlier_indices[seasons[outlier_indices] == season]
     
     # Set flagged and cleaned data for the outliers
-    qc_data[outlier_indices] <- NA
-    qc_data_flagged[outlier_indices] <- 1
+    qc_data[rm_dates] <- NA
+    qc_data_flagged[rm_dates] <- 1
   }
   
   # Output the results as a list
