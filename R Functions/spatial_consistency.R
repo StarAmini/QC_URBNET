@@ -1,7 +1,7 @@
 #' Spatial consistency test
-#' 
+#'
 #' Flag values based on neighboring stations with same land use category.
-#' 
+#'
 #' @param timeseries_df An xts object with the entire data set or a list of xts objects to be combined.
 #' @param metadata An xts object with spatial metadata including land use.
 #' @param threshold_multiplier Defines by how much to inflate differences (the higher, the more flags).
@@ -10,18 +10,42 @@
 #' @param distance_threshold_method "std", "mean", or a numeric value.
 #' @param min_neighbors Minimum number of neighbors
 #' @param min_threshold Defines threshold to flag data (the lower, the more flags).
-#' 
+#'
 #' @return
 #' A list of two xts objects (data with outliers removed and flags).
-#' 
-#' @examples 
+#'
+#' @examples
 #' out_list <- spatial_consistency(Bern$data[1,], Bern$xyz)
-#' 
+#'
 #' @import geosphere
 #' @import xts
 #' @import zoo
 #'
 #' @export
+# -------------------------------
+# k (sensitivity multiplier) per Table 2 (L6)
+# -------------------------------
+#' Sensitivity multiplier k for the spatial consistency test (Table 2, L6)
+#'
+#' Table 2 documents two values: k = 6 for general networks and k = 7 for
+#' dense urban cores. There is no automatic way to detect "dense urban core"
+#' from the data alone, so callers must state which networks qualify.
+#' Confirm the exact list against what was actually used to produce the
+#' released dataset (Basel and Zurich - the two densest networks in Table 1,
+#' with 200+ closely packed stations each - are the obvious candidates, but
+#' this needs sign-off, not a guess).
+#'
+#' @param network_name Name of the network being processed.
+#' @param dense_core_networks Character vector of network names to treat as
+#' dense urban cores (k = 7). Defaults to none, so unless a network is
+#' explicitly listed here, k = 6 (the "general" case) is used.
+#'
+#' @return 6 or 7, per Table 2.
+#' @export
+spatial_k_for_network <- function(network_name, dense_core_networks = character(0)) {
+  if (network_name %in% dense_core_networks) 7 else 6
+}
+
 # -------------------------------
 # Normalize metadata column names
 # -------------------------------
@@ -80,6 +104,13 @@ compute_distance_matrix <- function(metadata, id_col = "ID", lat_col = "LAT", lo
 # -------------------------------
 # Spatial QC core (no plots)
 # -------------------------------
+#' @param threshold_multiplier k, the sensitivity multiplier (Table 2, L6).
+#' Use 6 for general networks, 7 for dense urban cores - see
+#' \code{spatial_k_for_network()} above. The default here (6) is the
+#' documented "general" case; it is NOT automatically upgraded to 7 for
+#' dense-core networks, since that decision depends on which networks the
+#' paper actually treated as dense cores, and that call site is outside this
+#' file.
 spatial_outlier_detection <- function(timeseries_df, metadata,
                                       threshold_multiplier = 6,  # k
                                       abs_floor = 3,             # δ (°C)
@@ -92,7 +123,7 @@ spatial_outlier_detection <- function(timeseries_df, metadata,
                                       landuse_mode = c("strict","graded"),
                                       return_diagnostics = TRUE) {
   landuse_mode <- match.arg(landuse_mode)
-  
+
   # Distance + base weights
   D <- compute_distance_matrix(metadata, id_col)
   diag(D) <- NA
@@ -101,16 +132,16 @@ spatial_outlier_detection <- function(timeseries_df, metadata,
   }
   W0 <- exp(-(as.matrix(D)^2) / (2 * weight_decay^2))
   W0[is.na(W0)] <- 0
-  
+
   # Align stations
   sensor_ids <- intersect(colnames(timeseries_df), metadata[[id_col]])
   lu <- as.character(metadata$Landuse[match(sensor_ids, metadata[[id_col]])])
   ok <- !is.na(lu) & nzchar(lu)
   sensor_ids <- sensor_ids[ok]; lu <- lu[ok]
-  
+
   D  <- as.matrix(D)[sensor_ids, sensor_ids, drop = FALSE]
   W0 <- W0[sensor_ids, sensor_ids, drop = FALSE]
-  
+
   # Land-use similarity
   if (landuse_mode == "strict") {
     LU <- outer(lu, lu, FUN = Vectorize(function(a,b) as.numeric(a == b)))
@@ -125,7 +156,7 @@ spatial_outlier_detection <- function(timeseries_df, metadata,
     }))
   }
   dimnames(LU) <- list(sensor_ids, sensor_ids)
-  
+
   # Combine and hard-cap by radius
   W <- W0 * LU
   for (sid in rownames(W)) {
@@ -141,7 +172,7 @@ spatial_outlier_detection <- function(timeseries_df, metadata,
   }
   # Safety: zero weights beyond cap
   W[as.matrix(D) > radius_cap_m] <- 0
-  
+
   # Timeseries to matrix
   if (is.list(timeseries_df) && !inherits(timeseries_df, "xts")) {
     timeseries_df <- do.call(cbind, timeseries_df)
@@ -155,90 +186,100 @@ spatial_outlier_detection <- function(timeseries_df, metadata,
     if (is.null(time_index)) time_index <- seq_len(nrow(ts_df))
   }
   ts_df <- ts_df[, sensor_ids, drop = FALSE]
-  
+
   X <- as.matrix(ts_df)
   n_time   <- nrow(X)
   n_sensor <- ncol(X)
-  
+
   cleaned <- ts_df
   flagged <- ts_df; flagged[,] <- 0L
-  
+
   # Optional diagnostics containers
   if (isTRUE(return_diagnostics)) {
     avg_mat <- matrix(NA_real_, n_time, n_sensor, dimnames = list(NULL, sensor_ids))
     sd_mat  <- matrix(NA_real_, n_time, n_sensor, dimnames = list(NULL, sensor_ids))
     eff_mat <- matrix(NA_real_, n_time, n_sensor, dimnames = list(NULL, sensor_ids))
   }
-  
+
   W2 <- W * W
   abs_floor_vec <- rep(abs_floor, n_sensor)
-  
+
   for (t in seq_len(n_time)) {
     x <- X[t, ]
     valid_mask <- as.integer(!is.na(x))
     x_filled <- ifelse(is.na(x), 0, x)
-    
+
     # Weighted mean
     wsum <- as.vector(W %*% valid_mask)
     xsum <- as.vector(W %*% (valid_mask * x_filled))
     mu   <- xsum / wsum
     mu[wsum == 0] <- NA_real_
-    
+
     # Weighted variance against mu_i (matrix-safe)
     Xmat <- matrix(rep(x_filled, each = n_sensor), nrow = n_sensor)
     Mmat <- matrix(mu, nrow = n_sensor, ncol = n_sensor)
     diff <- Xmat - Mmat
     valid_mat <- matrix(valid_mask, nrow = n_sensor, ncol = n_sensor, byrow = TRUE)
-    
+
     num  <- rowSums((W * valid_mat) * (diff^2), na.rm = TRUE)
     den  <- pmax(wsum, 1e-12)
     sig2 <- num / den
     sig2[wsum == 0] <- NA_real_
     sig  <- sqrt(sig2)
-    
+
     # Neighbor counts and effective support
     n_neigh <- rowSums((W > 0) * valid_mat)
     num_eff <- (rowSums(W * valid_mat))^2
     den_eff <- rowSums((W2) * valid_mat)
     neff    <- num_eff / pmax(den_eff, 1e-12)
-    
+
     # Thresholds
     thr_k <- threshold_multiplier * sig
-    
+
     # Base rule
     outlier <- (threshold_multiplier * sig > 0.5) &              # your min_threshold
       (abs(x - mu) > thr_k) &
       (abs(x - mu) > abs_floor_vec) &
       (!is.na(x))
-    
+
     # Support requirement: at least 2 neighbors OR Neff >= 1.5
     support_ok <- (n_neigh >= min_neighbors_req) | (neff >= neff_star)
     outlier <- outlier & support_ok & (wsum > 0)
-    
+
     cleaned[t, ] <- ifelse(outlier, NA, x)
     flagged[t, ] <- as.integer(outlier)
-    
+
     if (isTRUE(return_diagnostics)) {
       avg_mat[t, ] <- mu
       sd_mat[t, ]  <- sig
       eff_mat[t, ] <- neff
     }
   }
-  
+
   # Return xts if input was xts
   if (inherits(timeseries_df, "xts")) {
     cleaned <- xts::xts(as.matrix(cleaned), order.by = as.POSIXct(time_index))
     flagged <- xts::xts(as.matrix(flagged), order.by = as.POSIXct(time_index))
   }
-  
+
   out <- list(cleaned_df = cleaned, flagged_df = flagged)
-  
+
   if (isTRUE(return_diagnostics)) {
     # Build a compact diagnostics long table (no plots)
     time_col <- if (inherits(timeseries_df,"xts")) as.POSIXct(time_index) else time_index
+    # as.vector() on an n_time x n_sensor matrix flattens column-major (time
+    # varies fastest within each station's block), so the labels below must
+    # match that: time repeats per-station (times = n_sensor), station
+    # repeats per-time-block (each = n_time). The previous version had these
+    # swapped, silently mislabeling every row - e.g. row 2 above would report
+    # station 2's diagnostics under station 1's label at a different
+    # timestamp. flagged_df/cleaned_df (the actual QC outputs) were not
+    # affected, since those are indexed as proper xts objects, not flattened
+    # through this rep()-based long table - only the optional diagnostics
+    # table was wrong.
     long <- data.frame(
-      time    = rep(time_col, each = n_sensor),
-      station = rep(colnames(X),  times = n_time),
+      time    = rep(time_col, times = n_sensor),
+      station = rep(colnames(X),  each = n_time),
       avg     = as.vector(avg_mat),
       sigma   = as.vector(sd_mat),
       Neff    = as.vector(eff_mat),
@@ -247,7 +288,7 @@ spatial_outlier_detection <- function(timeseries_df, metadata,
     )
     out$diagnostics <- list(long = long, sensor_ids = sensor_ids)
   }
-  
+
   out
 }
 
