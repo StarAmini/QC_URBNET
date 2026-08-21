@@ -1,20 +1,29 @@
 #' Spatio-temporal consistency test
-#' 
+#'
 #' Flag values based on neighboring stations and time evolution simultaneously.
-#' 
+#'
 #' @param xy_target ID of target station.
 #' @param xts_database An xts object with temperature data.
 #' @param xyz_metadata An xts object with spatial metadata.
 #' @param params List of parameters lmt_xy_, lmt_n_, n_nearby_.
-#' @param threshold Quantile threshold
-#' 
+#' @param threshold Quantile threshold. The Methods text states values are
+#' flagged when they exceed "the 99.99th percentile of their respective
+#' distributions" - i.e. 0.9999, not 0.99. (Previously this default was 0.99,
+#' a 99th-percentile cut, two orders of magnitude looser than documented.)
+#' Table 3's very low flag counts for this test are consistent with either
+#' value, since the check intersects three independent tail conditions
+#' (spatial + before + after), which compounds down regardless - so this
+#' can't be distinguished from the published flag counts alone. Confirm with
+#' the corresponding author which value actually produced the released
+#' dataset before relying on this for anything beyond matching the prose.
+#'
 #' @return
 #' A list of two xts objects (data with outliers removed and flags for target station)
 #' and a vector of flagged times.
-#' 
-#' @examples 
+#'
+#' @examples
 #' out_list <- spatiotemporal_consistency("Log_1", Bern$data, Bern$xyz)
-#' 
+#'
 #' @import xts
 #' @import zoo
 #'
@@ -28,21 +37,21 @@ spatiotemporal_consistency <- function(
         lmt_n_ = 5,
         n_nearby_ = 5
     ),
-    threshold = 0.99
+    threshold = 0.9999
 ) {
-  
+
   get_spatial_nearby_points <- function(
       xy_target,
       xyz_metadata,
       lmt_xy,
       lmt_n
   ) {
-    
+
     pos_target <- match(xy_target, xyz_metadata$ID)
-    
+
     target <- xyz_metadata[pos_target, c("LON", "LAT")]
     nearby <- xyz_metadata[, c("LON", "LAT")]
-    
+
     out <- xyz_metadata[, c("ID", "LON", "LAT")]
     out$distance <- geosphere::distHaversine(target, nearby)
     out <- out[out$distance < lmt_xy, ]
@@ -50,22 +59,22 @@ spatiotemporal_consistency <- function(
     out <- out[1:(lmt_n + 1), ]
     out <- out[complete.cases(out), ]
     out <- as.character(out$ID)
-    
+
     return(out)
-    
+
   }
-  
+
   # spatial check
   xy_nearby <- get_spatial_nearby_points(xy_target = xy_target,
                                          xyz_metadata = xyz_metadata,
                                          lmt_xy = params$lmt_xy_,
                                          lmt_n = params$lmt_n_)
   xy_nearby <- xy_nearby[-1]
-  
+
   if (length(xy_nearby) < params$n_nearby_) {
-    warning(paste("Not enough nearby stations for", xy_target, 
+    warning(paste("Not enough nearby stations for", xy_target,
                   "- found:", length(xy_nearby), "- skipping spatial QC but preserving column."))
-    
+
     zero_flags <- xts(rep(0, nrow(xts_database[, xy_target])), order.by = index(xts_database[, xy_target]))
     return(list(
       qc_data = xts_database[, xy_target],  # original data unchanged
@@ -74,30 +83,30 @@ spatiotemporal_consistency <- function(
       neighbor_count = length(xy_nearby)
     ))
   }
-  
+
   target_xts <- xts_database[, xy_target]
   nearby_xts <- xts_database[, xy_nearby]
-  
+
   dif_target_nearby <- lapply(
     seq_len(ncol(nearby_xts)),
     function(idd) {
-      
+
       dif_ts <- target_xts - nearby_xts[, idd]
-      
+
       dif_099 <- quantile(dif_ts, threshold, na.rm = TRUE)
       flag_099_pos <- time(dif_ts[dif_ts >= dif_099])
-      
+
       dif_1_099 <- quantile(dif_ts, 1 - threshold, na.rm = TRUE)
       flag_099_neg <- time(dif_ts[dif_ts <= dif_1_099])
-      
+
       out_ts <- dif_ts
       out_ts[!is.na(out_ts)] <- 0
       out_ts[c(flag_099_pos, flag_099_neg)] <- 1
-      
+
       out_ts
     }
   )
-  
+
   dif_target_nearby <- do.call(cbind, dif_target_nearby)
   nr_measurements <- rowSums(!is.na(dif_target_nearby))
   nr_measurements[is.na(target_xts)] <- 5
@@ -107,7 +116,7 @@ spatiotemporal_consistency <- function(
   # getting the dates
   dif_target_nearby <- time(target_xts)[dif_target_nearby]
   dif_target_nearby <- as.character(dif_target_nearby)
-  
+
   # temporal check
   # previous date
   dif_target_target_pre <-  target_xts - stats::lag(target_xts, k = -1)
@@ -121,7 +130,7 @@ spatiotemporal_consistency <- function(
       dif_target_target_pre < -quant_099_pre
   ]
   dif_target_target_pre <- as.character(time(dif_target_target_pre))
-  
+
   # next date
   dif_target_target_nex <-  stats::lag(target_xts, k = 1) - target_xts
   quant_099_next <- quantile(
@@ -135,25 +144,25 @@ spatiotemporal_consistency <- function(
   ]
   dif_target_target_nex <- as.character(time(dif_target_target_nex))
   dif_target_target <- intersect(dif_target_target_pre, dif_target_target_nex)
-  
+
   # intersecting both checks
   rm_dates <- intersect(dif_target_target, dif_target_nearby)
-  
-  
+
+
   print("rm_dates:")
   print(rm_dates)
   print(paste("Number of dates in rm_dates: ", length(rm_dates)))
-  
+
   qc_data <- qc_data_flagged <- target_xts
   qc_data[rm_dates] <- NA
   qc_data_flagged[!is.na(qc_data_flagged)] <- 0
   qc_data_flagged[rm_dates] <- 1
-  
+
   out <- list(
     qc_data = qc_data,
     qc_data_flagged = qc_data_flagged,
     rm_dates = rm_dates # Add rm_dates here
   )
-  
+
   return(out)
 }
