@@ -24,31 +24,24 @@ climatic_outliers <- function(xts_vector, ext_lim_factor = 4) {
   # Ensure time series is not empty
   if (ncol(xts_vector) == 0) stop("No stations detected in the dataset.")
   
-  # Compute the month of every timestamp once (was: format(time(...), "%m")
-  # re-run from scratch inside each of 3 separate 12-iteration sapply loops,
-  # each re-subsetting the full xts object per month - O(3 x 12 x n) of
-  # repeated, expensive xts subsetting. Grouping once via a plain numeric
-  # vector + split-style indexing keeps the same per-month quartile/IQR
-  # logic but only walks the series once.
-  months <- as.numeric(format(time(xts_vector), "%m"))
-  vals <- as.numeric(xts_vector[, 1])
-  idx <- zoo::index(xts_vector)
-
-  tavg_filter_l <- numeric(12)
-  tavg_filter_h <- numeric(12)
-  flagged <- logical(length(vals))
-  for (x in 1:12) {
-    sel <- months == x
-    sample_vals <- vals[sel]
-    if (!any(sel)) next
-    q <- quantile(sample_vals, c(.25, .75), na.rm = TRUE)
-    iqr <- IQR(sample_vals, na.rm = TRUE)
-    tavg_filter_l[x] <- q[1] - ext_lim_factor * iqr
-    tavg_filter_h[x] <- q[2] + ext_lim_factor * iqr
-    flagged[sel] <- !is.na(sample_vals) &
-      (sample_vals <= tavg_filter_l[x] | sample_vals >= tavg_filter_h[x])
-  }
-  rm_dates <- idx[flagged]
+  tavg_filter_l <- sapply(1:12, function(x) {
+    xts_obj_sample <- xts_vector[as.numeric(format(time(xts_vector), "%m")) == x, 1]
+    quantile(xts_obj_sample, .25, na.rm = TRUE) - ext_lim_factor * IQR(xts_obj_sample, na.rm = TRUE)
+  })
+  
+  tavg_filter_h <- sapply(1:12, function(x) {
+    xts_obj_sample <- xts_vector[as.numeric(format(time(xts_vector), "%m")) == x, 1]
+    quantile(xts_obj_sample, .75, na.rm = TRUE) + ext_lim_factor * IQR(xts_obj_sample, na.rm = TRUE)
+  })
+  
+  rm_dates <- do.call(c, sapply(1:12, function(x) {
+    xts_obj_sample <- xts_vector[as.numeric(format(time(xts_vector), "%m")) == x, 1]
+    if (length(xts_obj_sample) == 0) return(NULL)
+    zoo::index(
+      xts_obj_sample[xts_obj_sample <= tavg_filter_l[x] |
+                       xts_obj_sample >= tavg_filter_h[x]]
+    )
+  }))
   
   qc_data <- qc_data_flagged <- xts_vector[, 1]
   qc_data[as.POSIXct(rm_dates, tz="UTC")] <- NA
