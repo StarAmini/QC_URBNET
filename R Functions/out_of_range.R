@@ -19,10 +19,10 @@
 #'
 #' @examples
 #' bern_thresholds <- list(
-#'   winter = list(min_val = -24.44, max_val = 23.54),
-#'   spring = list(min_val = -21.05, max_val = 38.08),
+#'   winter = list(min_val = -22.44, max_val = 23.54),
+#'   spring = list(min_val = -20.05, max_val = 38.08),
 #'   summer = list(min_val = 7.85, max_val = 46.26),
-#'   autumn = list(min_val = -8.42, max_val = 40.87)
+#'   autumn = list(min_val = -6.42, max_val = 40.87)
 #' )
 #' out_list <- out_of_range(Bern$data$Log_1, bern_thresholds)
 #'
